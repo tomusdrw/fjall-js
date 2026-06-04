@@ -151,9 +151,11 @@ The following are **intentionally not in v0.1**. They are not bugs; they are def
 
 If your use case depends on one of these, please open an issue — prioritization is driven by demand.
 
-## A note on the unscoped `fjall` package
+## A note on the unscoped `fjall-js` package
 
-The unscoped [`fjall`](https://www.npmjs.com/package/fjall) package on npm is a deliberate **squat** owned by this project. It does nothing useful: it logs an error and throws on `require`. This is to prevent confusion and typosquatting. **Always install `@fjall-js/fjall`.**
+The unscoped [`fjall-js`](https://www.npmjs.com/package/fjall-js) package on npm is a deliberate **squat** owned by this project. It does nothing useful: it logs an error and throws on `require`. This is to prevent confusion and typosquatting. **Always install `@fjall-js/fjall`.**
+
+The unscoped [`fjall`](https://www.npmjs.com/package/fjall) package on npm is **unrelated** to this project and is owned by someone else — do not assume it is this wrapper.
 
 ## License
 
