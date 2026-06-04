@@ -39,9 +39,6 @@ jobs:
       - name: prettier
         run: npx prettier --check .
 
-      - name: tsc
-        run: npx tsc --noEmit
-
   build-and-test:
     name: Build & test (${{ matrix.target }})
     runs-on: ${{ matrix.host }}
@@ -79,6 +76,9 @@ jobs:
 
       - name: Build native module
         run: npx napi build --platform --release --target ${{ matrix.target }}
+
+      - name: Type-check (needs generated index.d.ts from the build above)
+        run: npx tsc --noEmit
 
       - name: Run tests
         run: npm test
