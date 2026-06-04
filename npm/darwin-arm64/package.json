@@ -1,0 +1,33 @@
+{
+  "name": "@fjall-js/fjall-darwin-arm64",
+  "version": "0.1.0",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "main": "fjall.darwin-arm64.node",
+  "files": [
+    "fjall.darwin-arm64.node"
+  ],
+  "description": "TypeScript wrapper for the fjall LSM-tree storage engine",
+  "keywords": [
+    "fjall",
+    "lsm-tree",
+    "kv",
+    "key-value",
+    "storage",
+    "database",
+    "rust",
+    "napi"
+  ],
+  "license": "MIT OR Apache-2.0",
+  "engines": {
+    "node": ">=18.17.0"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  }
+}

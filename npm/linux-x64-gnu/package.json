@@ -1,0 +1,36 @@
+{
+  "name": "@fjall-js/fjall-linux-x64-gnu",
+  "version": "0.1.0",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "main": "fjall.linux-x64-gnu.node",
+  "files": [
+    "fjall.linux-x64-gnu.node"
+  ],
+  "description": "TypeScript wrapper for the fjall LSM-tree storage engine",
+  "keywords": [
+    "fjall",
+    "lsm-tree",
+    "kv",
+    "key-value",
+    "storage",
+    "database",
+    "rust",
+    "napi"
+  ],
+  "license": "MIT OR Apache-2.0",
+  "engines": {
+    "node": ">=18.17.0"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
+  "libc": [
+    "glibc"
+  ]
+}

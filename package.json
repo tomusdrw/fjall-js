@@ -1,0 +1,63 @@
+{
+  "name": "@fjall-js/fjall",
+  "version": "0.1.0",
+  "description": "TypeScript wrapper for the fjall LSM-tree storage engine",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "license": "MIT OR Apache-2.0",
+  "engines": {
+    "node": ">=18.17.0"
+  },
+  "napi": {
+    "name": "fjall",
+    "triples": {
+      "defaults": false,
+      "additional": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ]
+    },
+    "package": {
+      "name": "@fjall-js/fjall"
+    }
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
+  "scripts": {
+    "build": "napi build --platform --release",
+    "build:debug": "napi build --platform",
+    "prepublishOnly": "napi prepublish -t npm",
+    "artifacts": "napi artifacts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "prettier --check . && tsc --noEmit",
+    "format": "prettier --write ."
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^2.18.4",
+    "@types/node": "^20.11.0",
+    "prettier": "^3.2.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.4.0"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts"
+  ],
+  "keywords": [
+    "fjall",
+    "lsm-tree",
+    "kv",
+    "key-value",
+    "storage",
+    "database",
+    "rust",
+    "napi"
+  ],
+  "optionalDependencies": {
+    "@fjall-js/fjall-darwin-arm64": "0.1.0",
+    "@fjall-js/fjall-linux-x64-gnu": "0.1.0"
+  }
+}
