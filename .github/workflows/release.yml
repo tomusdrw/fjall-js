@@ -70,13 +70,14 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: 20
+          # Trusted publishing requires Node >= 22.14.0 and npm >= 11.5.1.
+          node-version: 22
           cache: npm
           registry-url: 'https://registry.npmjs.org'
 
       - name: Upgrade npm for trusted publishing
         # OIDC trusted publishing requires npm >= 11.5.1; the npm bundled with
-        # Node 20 is 10.x, so upgrade explicitly.
+        # Node 22 is 10.x, so upgrade explicitly.
         run: npm install -g npm@latest
 
       - name: Install npm dependencies
