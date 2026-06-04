@@ -21,10 +21,10 @@ jobs:
             target: x86_64-unknown-linux-gnu
             output: fjall.linux-x64-gnu.node
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 20
           cache: npm
@@ -49,7 +49,7 @@ jobs:
         run: npm test
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fjall-${{ matrix.target }}
           path: ${{ matrix.output }}
@@ -60,24 +60,30 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     environment: release
+    # id-token: write enables npm OIDC trusted publishing (no NPM_TOKEN secret).
     permissions:
       contents: write
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 20
           cache: npm
           registry-url: 'https://registry.npmjs.org'
 
+      - name: Upgrade npm for trusted publishing
+        # OIDC trusted publishing requires npm >= 11.5.1; the npm bundled with
+        # Node 20 is 10.x, so upgrade explicitly.
+        run: npm install -g npm@latest
+
       - name: Install npm dependencies
         run: npm ci
 
       - name: Download all build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
 
@@ -93,25 +99,23 @@ jobs:
       - name: Pin optionalDependencies via prepublish
         run: npx napi prepublish -t npm --skip-gh-release
 
+      # No NODE_AUTH_TOKEN: auth and provenance both come from the GitHub OIDC
+      # token via npm trusted publishing. Each package must have a trusted
+      # publisher configured on npmjs.com (see README) pointing at this repo,
+      # workflow, and the `release` environment.
       - name: Publish @fjall-js/fjall-darwin-arm64
         run: npm publish --access public --provenance
         working-directory: npm/darwin-arm64
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish @fjall-js/fjall-linux-x64-gnu
         run: npm publish --access public --provenance
         working-directory: npm/linux-x64-gnu
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish @fjall-js/fjall (main)
         run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
           fail_on_unmatched_files: true
