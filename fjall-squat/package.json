@@ -1,0 +1,25 @@
+{
+  "name": "fjall",
+  "version": "0.0.1",
+  "description": "Placeholder package. This is NOT the fjall TypeScript wrapper. Install @fjall-js/fjall instead. Published to prevent typo-squatting attacks against users of the real package.",
+  "main": "index.js",
+  "license": "MIT OR Apache-2.0",
+  "engines": {
+    "node": ">=18.17.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tomusdrw/fjall-js"
+  },
+  "homepage": "https://github.com/tomusdrw/fjall-js",
+  "keywords": [
+    "fjall"
+  ],
+  "files": [
+    "index.js",
+    "README.md"
+  ]
+}

@@ -1,0 +1,34 @@
+# Local-only design docs
+docs/
+
+# Rust
+/target
+**/*.rs.bk
+Cargo.lock.bak
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# napi-rs build outputs (generated at repo root only — do NOT ignore
+# fjall-squat/index.js or other nested index.js files)
+*.node
+/index.js
+/index.d.ts
+
+# Test data
+__test__/tmp/
+*.fjall
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
