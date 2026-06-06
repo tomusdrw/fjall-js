@@ -26,9 +26,10 @@
     "access": "public"
   },
   "scripts": {
-    "build": "napi build --platform --release",
-    "build:debug": "napi build --platform",
-    "prepublishOnly": "napi prepublish -t npm",
+    "build": "napi build --platform --release && node scripts/patch-esm-loader.mjs",
+    "build:debug": "napi build --platform && node scripts/patch-esm-loader.mjs",
+    "patch:loader": "node scripts/patch-esm-loader.mjs",
+    "prepublishOnly": "napi prepublish -t npm && node scripts/patch-esm-loader.mjs",
     "artifacts": "napi artifacts",
     "test": "vitest run",
     "test:watch": "vitest",

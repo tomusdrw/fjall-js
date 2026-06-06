@@ -45,6 +45,9 @@ jobs:
       - name: Build native module
         run: npx napi build --platform --release --target ${{ matrix.target }}
 
+      - name: Patch loader for ESM-bundler compatibility
+        run: node scripts/patch-esm-loader.mjs
+
       - name: Run tests
         run: npm test
 
