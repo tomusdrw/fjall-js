@@ -1,0 +1,186 @@
+name: Version Bump
+
+# Manually-triggered workflow that bumps the package version across every
+# place it lives (root package.json, its optionalDependencies, both
+# npm/<triple>/package.json files and package-lock.json), opens a PR with the
+# change, and creates a DRAFT GitHub release.
+#
+# The draft release intentionally does NOT create a git tag: for a draft, the
+# tag named here is only a placeholder and is created when *you* publish the
+# release. Publishing the release (which creates the v* tag) is what triggers
+# release.yml to build and publish to npm.
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: 'Semver bump (ignored if "Exact version" is set)'
+        type: choice
+        default: patch
+        options:
+          - patch
+          - minor
+          - major
+          - prerelease
+      exact_version:
+        description: 'Exact version, e.g. 1.2.3 (overrides the bump above)'
+        type: string
+        required: false
+        default: ''
+      preid:
+        description: 'Prerelease identifier, e.g. beta (only for "prerelease")'
+        type: string
+        required: false
+        default: ''
+
+# Avoid two bump runs racing to create the same branch / release.
+concurrency:
+  group: version-bump
+  cancel-in-progress: false
+
+permissions:
+  contents: write # push the release branch + create the draft release
+  pull-requests: write # open the bump PR
+
+jobs:
+  bump:
+    name: Bump version & open PR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Compute & apply version bump
+        id: bump
+        env:
+          RELEASE_TYPE: ${{ inputs.release_type }}
+          EXACT_VERSION: ${{ inputs.exact_version }}
+          PREID: ${{ inputs.preid }}
+        run: |
+          set -euo pipefail
+
+          # 1. Bump the root package.json version (also updates the lockfile
+          #    root version). --no-git-tag-version => no commit and no tag.
+          if [ -n "${EXACT_VERSION}" ]; then
+            npm version "${EXACT_VERSION}" --no-git-tag-version
+          elif [ "${RELEASE_TYPE}" = "prerelease" ] && [ -n "${PREID}" ]; then
+            npm version prerelease --preid "${PREID}" --no-git-tag-version
+          else
+            npm version "${RELEASE_TYPE}" --no-git-tag-version
+          fi
+
+          NEW_VERSION="$(node -p "require('./package.json').version")"
+
+          # 2. Propagate the new version to the optionalDependencies (root) and
+          #    to both platform packages under npm/.
+          node -e '
+            const fs = require("fs");
+            const v = require("./package.json").version;
+            const files = [
+              "package.json",
+              "npm/darwin-arm64/package.json",
+              "npm/linux-x64-gnu/package.json",
+            ];
+            for (const f of files) {
+              const j = JSON.parse(fs.readFileSync(f, "utf8"));
+              j.version = v;
+              if (j.optionalDependencies) {
+                for (const k of Object.keys(j.optionalDependencies)) {
+                  j.optionalDependencies[k] = v;
+                }
+              }
+              fs.writeFileSync(f, JSON.stringify(j, null, 2) + "\n");
+            }
+          '
+
+          # 3. Re-sync the lockfile with the new optionalDependencies so that
+          #    `npm ci` (run by CI) keeps working. The new platform-package
+          #    versions are not published yet, so npm drops their tree entries
+          #    rather than recording stale resolved/integrity hashes.
+          npm install --package-lock-only --no-audit --no-fund
+
+          {
+            echo "version=${NEW_VERSION}"
+            echo "tag=v${NEW_VERSION}"
+            echo "branch=release/v${NEW_VERSION}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Commit, push branch & open PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.bump.outputs.tag }}
+          BRANCH: ${{ steps.bump.outputs.branch }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git checkout -b "${BRANCH}"
+          git add package.json package-lock.json \
+            npm/darwin-arm64/package.json npm/linux-x64-gnu/package.json
+          git commit -m "chore: bump version to ${TAG}"
+          git push --set-upstream origin "${BRANCH}"
+
+          gh pr create \
+            --base "${GITHUB_REF_NAME}" \
+            --head "${BRANCH}" \
+            --title "chore: bump version to ${TAG}" \
+            --body "$(cat <<EOF
+          Automated version bump to \`${TAG}\`.
+
+          Bumps the version in \`package.json\` (+ its \`optionalDependencies\`),
+          both \`npm/<triple>/package.json\` files, and \`package-lock.json\`.
+
+          A **draft** GitHub release for \`${TAG}\` was created by the same run.
+          After merging this PR, publish that draft to create the \`${TAG}\` tag,
+          which triggers \`release.yml\` to build and publish to npm.
+
+          > Note: this PR was opened by \`GITHUB_TOKEN\`, so CI does not run on it
+          > automatically. Re-run CI from the PR if you need the checks.
+          EOF
+          )"
+
+      - name: Create draft GitHub release (no tag pinned)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.bump.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          # Skip if a release for this version already exists (e.g. re-run with
+          # an exact version). Drafts are viewable via `gh release view`.
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "Release ${TAG} already exists; leaving it untouched."
+            exit 0
+          fi
+
+          # --draft: not published, so no git tag is created now. We pass the
+          # tag name as a placeholder only; the real tag is created when you
+          # publish the release. --target is intentionally omitted so the tag
+          # resolves against the default branch at publish time.
+          gh release create "${TAG}" \
+            --draft \
+            --generate-notes \
+            --title "${TAG}"
+
+      - name: Summary
+        if: always()
+        env:
+          TAG: ${{ steps.bump.outputs.tag }}
+          BRANCH: ${{ steps.bump.outputs.branch }}
+        run: |
+          {
+            echo "## Version bump: ${TAG:-unknown}"
+            echo ""
+            echo "- Branch: \`${BRANCH:-n/a}\`"
+            echo "- A pull request with the bump was opened against \`${GITHUB_REF_NAME}\`."
+            echo "- A **draft** release \`${TAG:-n/a}\` was created (no tag pinned yet)."
+            echo ""
+            echo "Next: merge the PR, then publish the draft release to create the \`${TAG:-vX.Y.Z}\` tag and trigger npm publishing."
+          } >> "$GITHUB_STEP_SUMMARY"
