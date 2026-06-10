@@ -1,10 +1,17 @@
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
 type SharedKeyspace = Arc<Mutex<Option<fjall::Keyspace>>>;
+type SharedPartition = Arc<Mutex<Option<fjall::PartitionHandle>>>;
+
+/// Weak references to the partition handles opened from a keyspace, so
+/// `close()` can drop them eagerly. Weak (not Arc) so a keyspace never keeps a
+/// partition's native memory alive on its own — only the JS `Partition` wrapper
+/// holds the strong reference.
+type PartitionRegistry = Arc<Mutex<Vec<Weak<Mutex<Option<fjall::PartitionHandle>>>>>>;
 
 fn err(e: impl std::fmt::Display) -> Error {
     Error::from_reason(e.to_string())
@@ -43,12 +50,14 @@ pub async fn open(path: String) -> Result<Keyspace> {
 
     Ok(Keyspace {
         inner: Arc::new(Mutex::new(Some(ks))),
+        partitions: Arc::new(Mutex::new(Vec::new())),
     })
 }
 
 #[napi]
 pub struct Keyspace {
     inner: SharedKeyspace,
+    partitions: PartitionRegistry,
 }
 
 #[napi]
@@ -64,6 +73,19 @@ impl Keyspace {
         };
         let state = self.inner.clone();
 
+        // Allocate the shared handle slot and register its weak reference now,
+        // *before* the await, so close() can reach it; the slot is filled once
+        // open_partition returns below. (Like the rest of this file, we read
+        // `&self` only before awaiting and carry owned data across the await.)
+        // Prune dead weaks first so the registry can't grow unbounded across
+        // many partition() calls.
+        let inner: SharedPartition = Arc::new(Mutex::new(None));
+        {
+            let mut registry = lock(&self.partitions)?;
+            registry.retain(|w| w.strong_count() > 0);
+            registry.push(Arc::downgrade(&inner));
+        }
+
         let handle = napi::tokio::task::spawn_blocking(move || {
             ks_clone.open_partition(&name, fjall::PartitionCreateOptions::default())
         })
@@ -71,9 +93,11 @@ impl Keyspace {
         .map_err(join_err)?
         .map_err(err)?;
 
+        *lock(&inner)? = Some(handle);
+
         Ok(Partition {
             ks_state: state,
-            inner: Mutex::new(Some(handle)),
+            inner,
         })
     }
 
@@ -102,10 +126,35 @@ impl Keyspace {
             let mut g = lock(&self.inner)?;
             g.take()
         };
-        if let Some(ks) = taken {
+
+        // Pull every still-live partition handle out of its slot so it can be
+        // dropped now, rather than whenever V8 happens to GC the JS Partition
+        // wrappers — which, because the heavy memory lives in the native heap
+        // and is invisible to V8, can be effectively never. A live handle keeps
+        // the partition's memtables, journal, write buffer and block cache
+        // alive, so deferring this drop is the leak. Dead weaks were already
+        // freed; draining also empties the registry so a second close() is a
+        // no-op.
+        let parts: Vec<fjall::PartitionHandle> = {
+            let mut registry = lock(&self.partitions)?;
+            let mut handles = Vec::with_capacity(registry.len());
+            for weak in registry.drain(..) {
+                if let Some(arc) = weak.upgrade() {
+                    if let Some(handle) = lock(&arc)?.take() {
+                        handles.push(handle);
+                    }
+                }
+            }
+            handles
+        };
+
+        if taken.is_some() || !parts.is_empty() {
             napi::tokio::task::spawn_blocking(move || {
-                let _ = ks.persist(fjall::PersistMode::SyncAll);
-                drop(ks);
+                if let Some(ks) = taken {
+                    let _ = ks.persist(fjall::PersistMode::SyncAll);
+                    drop(ks);
+                }
+                drop(parts);
             })
             .await
             .map_err(join_err)?;
@@ -117,7 +166,7 @@ impl Keyspace {
 #[napi]
 pub struct Partition {
     ks_state: SharedKeyspace,
-    inner: Mutex<Option<fjall::PartitionHandle>>,
+    inner: SharedPartition,
 }
 
 #[napi]
