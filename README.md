@@ -64,6 +64,8 @@ Flush in-memory writes to disk. See [Persistence](#persistence) below.
 
 Close the keyspace and release the directory lock. After `close()`, the keyspace and all of its partitions are no longer usable.
 
+The native memory held by the keyspace and its partitions (memtables, write buffer, block cache) is released eagerly on `close()`, rather than lingering until the JS `Keyspace` / `Partition` objects are garbage-collected. This keeps RSS flat when you repeatedly open, write, and close keyspaces.
+
 ### `Partition.get(key: Uint8Array): Buffer | null`
 
 **Synchronous.** Returns the value bytes for `key`, or `null` if the key is not present. `null` (not `undefined`) is used to make a miss explicit.
