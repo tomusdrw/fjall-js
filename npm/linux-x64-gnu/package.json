@@ -23,6 +23,15 @@
     "napi"
   ],
   "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tomusdrw/fjall-js.git",
+    "directory": "npm/linux-x64-gnu"
+  },
+  "homepage": "https://github.com/tomusdrw/fjall-js#readme",
+  "bugs": {
+    "url": "https://github.com/tomusdrw/fjall-js/issues"
+  },
   "engines": {
     "node": ">=18.17.0"
   },

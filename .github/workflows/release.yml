@@ -58,6 +58,19 @@ jobs:
           path: ${{ matrix.output }}
           if-no-files-found: error
 
+      # The generated + ESM-patched loader and the type defs are identical across
+      # targets, so upload them once (from the Linux build) for the publish job,
+      # which does not run `napi build` and so cannot regenerate them itself.
+      - name: Upload JS bindings for the main package
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        uses: actions/upload-artifact@v7
+        with:
+          name: bindings
+          path: |
+            index.js
+            index.d.ts
+          if-no-files-found: error
+
   publish:
     name: Publish to npm
     needs: [build]
@@ -91,17 +104,28 @@ jobs:
         with:
           path: artifacts
 
-      - name: Move binaries to repo root
-        run: |
-          set -euo pipefail
-          find artifacts -name '*.node' -exec mv {} . \;
-          ls -la *.node
-
-      - name: Place binaries into platform packages
+      # Distributes artifacts/**/fjall.<triple>.node into the matching
+      # npm/<triple>/ package dir (and a copy at the repo root for the GitHub
+      # release below). Reads from ./artifacts, so keep the download un-flattened.
+      - name: Place native binaries into platform packages
         run: npx napi artifacts
 
-      - name: Pin optionalDependencies via prepublish
-        run: npx napi prepublish -t npm --skip-gh-release
+      # The publish job never runs `napi build`, so restore the generated loader
+      # and type defs (uploaded by the build job) — they are the main package's
+      # only shipped files (see "files" in package.json).
+      - name: Restore generated loader for the main package
+        run: |
+          set -euo pipefail
+          cp artifacts/bindings/index.js artifacts/bindings/index.d.ts .
+          ls -la index.js index.d.ts
+
+      # Add the per-platform optionalDependencies (deliberately kept out of the
+      # committed manifest so `npm ci` stays valid) to the main package that is
+      # about to be published. Does NOT publish anything — unlike `napi
+      # prepublish`, which would also publish the platform packages (without
+      # provenance) and duplicate the explicit steps below.
+      - name: Pin optionalDependencies on the main package
+        run: node scripts/pin-optional-deps.mjs
 
       # No NODE_AUTH_TOKEN: auth and provenance both come from the GitHub OIDC
       # token via npm trusted publishing. Each package must have a trusted
