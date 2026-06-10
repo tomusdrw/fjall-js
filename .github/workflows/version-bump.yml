@@ -1,9 +1,9 @@
 name: Version Bump
 
 # Manually-triggered workflow that bumps the package version across every
-# place it lives (root package.json, its optionalDependencies, both
-# npm/<triple>/package.json files and package-lock.json), opens a PR with the
-# change, and creates a DRAFT GitHub release.
+# place it lives (root package.json, both npm/<triple>/package.json files and
+# package-lock.json), opens a PR with the change, and creates a DRAFT GitHub
+# release.
 #
 # The draft release intentionally does NOT create a git tag: for a draft, the
 # tag named here is only a placeholder and is created when *you* publish the
@@ -76,32 +76,26 @@ jobs:
 
           NEW_VERSION="$(node -p "require('./package.json').version")"
 
-          # 2. Propagate the new version to the optionalDependencies (root) and
-          #    to both platform packages under npm/.
+          # 2. Propagate the new version to every platform package under npm/.
+          #    (The main package's version was set by `npm version` above; its
+          #    optionalDependencies are injected at publish time rather than
+          #    committed — see scripts/pin-optional-deps.mjs — so the committed
+          #    lockfile stays valid for `npm ci`.)
           node -e '
             const fs = require("fs");
+            const path = require("path");
             const v = require("./package.json").version;
-            const files = [
-              "package.json",
-              "npm/darwin-arm64/package.json",
-              "npm/linux-x64-gnu/package.json",
-            ];
-            for (const f of files) {
+            for (const entry of fs.readdirSync("npm", { withFileTypes: true })) {
+              if (!entry.isDirectory()) continue;
+              const f = path.join("npm", entry.name, "package.json");
+              if (!fs.existsSync(f)) continue;
               const j = JSON.parse(fs.readFileSync(f, "utf8"));
               j.version = v;
-              if (j.optionalDependencies) {
-                for (const k of Object.keys(j.optionalDependencies)) {
-                  j.optionalDependencies[k] = v;
-                }
-              }
               fs.writeFileSync(f, JSON.stringify(j, null, 2) + "\n");
             }
           '
 
-          # 3. Re-sync the lockfile with the new optionalDependencies so that
-          #    `npm ci` (run by CI) keeps working. The new platform-package
-          #    versions are not published yet, so npm drops their tree entries
-          #    rather than recording stale resolved/integrity hashes.
+          # 3. Re-sync the lockfile's root version with package.json.
           npm install --package-lock-only --no-audit --no-fund
 
           {
@@ -109,6 +103,13 @@ jobs:
             echo "tag=v${NEW_VERSION}"
             echo "branch=release/v${NEW_VERSION}"
           } >> "$GITHUB_OUTPUT"
+
+      - name: Verify the bumped state passes the release job's npm ci
+        # The release workflow begins publishing with `npm ci`. If the bump left
+        # package.json and package-lock.json out of sync, fail here — before any
+        # PR or draft release is created — instead of at release time. This is
+        # the pre-release guard for the lockfile-drift class of failure.
+        run: npm ci
 
       - name: Commit, push branch & open PR
         env:
@@ -134,8 +135,8 @@ jobs:
             --body "$(cat <<EOF
           Automated version bump to \`${TAG}\`.
 
-          Bumps the version in \`package.json\` (+ its \`optionalDependencies\`),
-          both \`npm/<triple>/package.json\` files, and \`package-lock.json\`.
+          Bumps the version in \`package.json\`, both \`npm/<triple>/package.json\`
+          files, and \`package-lock.json\`.
 
           A **draft** GitHub release for \`${TAG}\` was created by the same run.
           After merging this PR, publish that draft to create the \`${TAG}\` tag,

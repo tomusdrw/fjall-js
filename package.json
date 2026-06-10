@@ -5,6 +5,14 @@
   "main": "index.js",
   "types": "index.d.ts",
   "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tomusdrw/fjall-js.git"
+  },
+  "homepage": "https://github.com/tomusdrw/fjall-js#readme",
+  "bugs": {
+    "url": "https://github.com/tomusdrw/fjall-js/issues"
+  },
   "engines": {
     "node": ">=18.17.0"
   },
@@ -29,7 +37,6 @@
     "build": "napi build --platform --release && node scripts/patch-esm-loader.mjs",
     "build:debug": "napi build --platform && node scripts/patch-esm-loader.mjs",
     "patch:loader": "node scripts/patch-esm-loader.mjs",
-    "prepublishOnly": "napi prepublish -t npm && node scripts/patch-esm-loader.mjs",
     "artifacts": "napi artifacts",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -56,9 +63,5 @@
     "database",
     "rust",
     "napi"
-  ],
-  "optionalDependencies": {
-    "@fjall-js/fjall-darwin-arm64": "0.1.2",
-    "@fjall-js/fjall-linux-x64-gnu": "0.1.2"
-  }
+  ]
 }

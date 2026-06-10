@@ -27,7 +27,10 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Install npm dependencies
+      - name: Install deps & verify package-lock.json is in sync
+        # `npm ci` refuses to run when package.json and package-lock.json drift —
+        # the failure that used to surface only at release time. Running it on
+        # every PR catches that drift here instead.
         run: npm ci
 
       - name: cargo fmt
