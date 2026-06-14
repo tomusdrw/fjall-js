@@ -48,9 +48,16 @@ The example uses top-level `await`, so it must run as ESM (`"type": "module"` or
 
 ## API
 
-### `open(path: string): Promise<Keyspace>`
+### `open(path: string, options?: OpenOptions): Promise<Keyspace>`
 
 Open (or create) a keyspace at the given directory path. The directory is created if it does not exist. Throws if `path` points to a regular file or to a directory already locked by another keyspace.
+
+`options` is optional:
+
+| Option           | Meaning                                                                                                                                                                                 |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ephemeral`      | When `true`, `close()` skips the `sync-all` flush. Only safe for throwaway databases (e.g. a fuzz target that wipes on every reset). Mirrors LMDB's `noSync`. Defaults to `false`.      |
+| `cacheSizeBytes` | Cache capacity in bytes, shared across the keyspace's partitions. Bounds the resident set (fjall reads through this cache rather than mmapping the store). Defaults to fjall's default. |
 
 ### `Keyspace.partition(name: string): Promise<Partition>`
 
@@ -80,6 +87,17 @@ Insert or overwrite a key/value pair. Runs on a tokio worker thread.
 
 Remove a key. A subsequent `get` returns `null`. Idempotent — removing a missing key is not an error.
 
+### `Partition.insertBatch(entries: BatchEntry[]): Promise<void>`
+
+Atomically insert many key/value pairs in a single fjall write batch — one journal write and one worker-thread round-trip, instead of one per pair. Much faster than awaiting `insert` in a loop when writing many values at once. Like `insert`, durability is deferred: call `persist()` (or `close()` on a non-ephemeral keyspace) to flush. An empty list is a no-op.
+
+```ts
+await partition.insertBatch([
+  { key: Buffer.from('a'), value: Buffer.from('1') },
+  { key: Buffer.from('b'), value: Buffer.from('2') },
+]);
+```
+
 ### Types
 
 ```ts
@@ -87,7 +105,17 @@ type Key = Uint8Array;
 type Value = Uint8Array;
 type PersistMode = 'buffer' | 'sync-data' | 'sync-all';
 
-export function open(path: string): Promise<Keyspace>;
+export interface OpenOptions {
+  ephemeral?: boolean;
+  cacheSizeBytes?: number;
+}
+
+export interface BatchEntry {
+  key: Key;
+  value: Value;
+}
+
+export function open(path: string, options?: OpenOptions): Promise<Keyspace>;
 
 export interface Keyspace {
   partition(name: string): Promise<Partition>;
@@ -99,6 +127,7 @@ export interface Partition {
   get(key: Key): Buffer | null;
   insert(key: Key, value: Value): Promise<void>;
   remove(key: Key): Promise<void>;
+  insertBatch(entries: BatchEntry[]): Promise<void>;
 }
 ```
 
@@ -118,7 +147,7 @@ export interface Partition {
 
 The default (no argument) is `'sync-data'`, matching the upstream fjall default.
 
-Typical usage: batch a number of `insert`/`remove` calls, then call `persist()` once at the end of the batch. Calling `persist()` per write is correct but slow.
+Typical usage: write a number of values (ideally via a single `insertBatch`), then call `persist()` once at the end. Calling `persist()` per write is correct but slow.
 
 ## Supported platforms
 
@@ -143,9 +172,9 @@ If you've read the fjall docs, the concepts and method names (`insert`, `remove`
 The following are **intentionally not in v0.1**. They are not bugs; they are deferred. Most are plausible candidates for a later release.
 
 - Range queries, iterators, cursors
-- Transactions (`TxKeyspace` / `WriteTx`)
+- Transactions (`TxKeyspace` / `WriteTx`) — though `insertBatch` provides atomic multi-key writes
 - Snapshots
-- Compression, block cache, and compactor configuration
+- Compression and compactor configuration (the block-cache _size_ is configurable via `open`'s `cacheSizeBytes`)
 - String / JSON convenience helpers (callers pass raw bytes)
 - Linux musl, Linux arm64, macOS x64, Windows binaries
 - Source-build fallback when no prebuilt binary is available

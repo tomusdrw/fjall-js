@@ -39,18 +39,45 @@ fn parse_persist_mode(s: Option<&str>) -> Result<fjall::PersistMode> {
     })
 }
 
+/// Options for [`open`].
+#[napi(object)]
+pub struct OpenOptions {
+    /// Skip the durability flush (`sync-all`) on `close()`. Only safe for
+    /// throwaway databases — e.g. a fuzz target that wipes on every reset.
+    /// Mirrors LMDB's `noSync`. Defaults to `false`.
+    pub ephemeral: Option<bool>,
+    /// Cache capacity in bytes, shared across the keyspace's partitions. fjall
+    /// reads through this bounded cache instead of mmapping the whole store, so
+    /// this caps the resident set. Defaults to fjall's built-in cache size.
+    pub cache_size_bytes: Option<f64>,
+}
+
 /// Open (or create) a fjall keyspace at the given filesystem path.
 #[napi]
-pub async fn open(path: String) -> Result<Keyspace> {
+pub async fn open(path: String, options: Option<OpenOptions>) -> Result<Keyspace> {
     let path = PathBuf::from(path);
-    let ks = napi::tokio::task::spawn_blocking(move || fjall::Config::new(path).open())
-        .await
-        .map_err(join_err)?
-        .map_err(err)?;
+    let ephemeral = options.as_ref().and_then(|o| o.ephemeral).unwrap_or(false);
+    let cache_size_bytes = options.as_ref().and_then(|o| o.cache_size_bytes);
+
+    let ks = napi::tokio::task::spawn_blocking(move || {
+        let mut config = fjall::Config::new(path);
+        // Only override the cache when a sane, positive size is given; otherwise
+        // keep fjall's default.
+        if let Some(bytes) = cache_size_bytes {
+            if bytes.is_finite() && bytes >= 1.0 {
+                config = config.cache_size(bytes as u64);
+            }
+        }
+        config.open()
+    })
+    .await
+    .map_err(join_err)?
+    .map_err(err)?;
 
     Ok(Keyspace {
         inner: Arc::new(Mutex::new(Some(ks))),
         partitions: Arc::new(Mutex::new(Vec::new())),
+        ephemeral,
     })
 }
 
@@ -58,6 +85,8 @@ pub async fn open(path: String) -> Result<Keyspace> {
 pub struct Keyspace {
     inner: SharedKeyspace,
     partitions: PartitionRegistry,
+    /// When true, `close()` skips the sync-all flush (see [`OpenOptions`]).
+    ephemeral: bool,
 }
 
 #[napi]
@@ -118,10 +147,12 @@ impl Keyspace {
         Ok(())
     }
 
-    /// Persist with `sync-all` then release the keyspace handle. Subsequent
-    /// operations on this Keyspace and any Partition opened from it will fail.
+    /// Release the keyspace handle, persisting with `sync-all` first unless the
+    /// keyspace was opened with `ephemeral: true`. Subsequent operations on this
+    /// Keyspace and any Partition opened from it will fail.
     #[napi]
     pub async fn close(&self) -> Result<()> {
+        let ephemeral = self.ephemeral;
         let taken = {
             let mut g = lock(&self.inner)?;
             g.take()
@@ -151,7 +182,12 @@ impl Keyspace {
         if taken.is_some() || !parts.is_empty() {
             napi::tokio::task::spawn_blocking(move || {
                 if let Some(ks) = taken {
-                    let _ = ks.persist(fjall::PersistMode::SyncAll);
+                    // Ephemeral keyspaces are throwaway, so skip the sync-all
+                    // fsync — it is the dominant teardown cost when a fuzz target
+                    // wipes and reopens the keyspace on every reset.
+                    if !ephemeral {
+                        let _ = ks.persist(fjall::PersistMode::SyncAll);
+                    }
                     drop(ks);
                 }
                 drop(parts);
@@ -161,6 +197,13 @@ impl Keyspace {
         }
         Ok(())
     }
+}
+
+/// A key/value pair for [`Partition::insert_batch`].
+#[napi(object)]
+pub struct BatchEntry {
+    pub key: Uint8Array,
+    pub value: Uint8Array,
 }
 
 #[napi]
@@ -216,6 +259,40 @@ impl Partition {
             .map_err(err)?;
         Ok(())
     }
+
+    /// Atomically insert many key/value pairs in a single write batch.
+    ///
+    /// Equivalent to a sequence of `insert` calls, but commits them as one fjall
+    /// batch: a single journal write and one worker-thread round-trip, instead of
+    /// one per pair. Like `insert`, durability is deferred — call `persist` (or
+    /// `close` on a non-ephemeral keyspace) to flush to disk. An empty list is a
+    /// no-op.
+    #[napi]
+    pub async fn insert_batch(&self, entries: Vec<BatchEntry>) -> Result<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let ks = self.clone_ks()?;
+        let part = self.clone_part()?;
+        // Copy the bytes out of the JS-owned Uint8Arrays before leaving the JS
+        // thread; `into_iter` drops each entry here so no Uint8Array is held
+        // across the await.
+        let owned: Vec<(Vec<u8>, Vec<u8>)> = entries
+            .into_iter()
+            .map(|e| (e.key.as_ref().to_vec(), e.value.as_ref().to_vec()))
+            .collect();
+        napi::tokio::task::spawn_blocking(move || {
+            let mut batch = ks.batch();
+            for (key, value) in owned {
+                batch.insert(&part, key, value);
+            }
+            batch.commit()
+        })
+        .await
+        .map_err(join_err)?
+        .map_err(err)?;
+        Ok(())
+    }
 }
 
 impl Partition {
@@ -232,5 +309,14 @@ impl Partition {
             .ok_or_else(|| Error::from_reason("Partition is closed"))?
             .clone();
         Ok(part)
+    }
+
+    fn clone_ks(&self) -> Result<fjall::Keyspace> {
+        let g = lock(&self.ks_state)?;
+        let ks = g
+            .as_ref()
+            .ok_or_else(|| Error::from_reason("Keyspace is closed"))?
+            .clone();
+        Ok(ks)
     }
 }
