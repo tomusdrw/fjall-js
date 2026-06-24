@@ -587,6 +587,14 @@ mod tests {
         let writer = attach_or_create(cfg(&p), Writability::Writable).unwrap();
         let reader = attach_or_create(cfg(&p), Writability::ReadOnly).unwrap();
 
+        // The guarantee under test rests on these two distinct handles sharing
+        // ONE engine; assert that explicitly so the visibility below is meaningful.
+        assert_eq!(
+            writer.engine.upgrade().unwrap().ptr_id(),
+            reader.engine.upgrade().unwrap().ptr_id(),
+            "writer and reader must share one engine"
+        );
+
         open_partition(&writer, "items").unwrap();
         open_partition(&reader, "items").unwrap();
 
