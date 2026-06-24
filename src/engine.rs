@@ -541,7 +541,11 @@ mod tests {
         for _ in 0..6 {
             let p = p.clone();
             threads.push(std::thread::spawn(move || {
-                for _ in 0..50 {
+                // Each cycle is a real fjall open + teardown (joins background
+                // threads, ~0.2s). The teardown/reopen race is hit within the
+                // first few cycles, so keep the per-thread count small — 6 threads
+                // hammering one path still overlaps teardown with reopen many times.
+                for _ in 0..12 {
                     let h = attach_or_create(
                         EngineConfig { path: p.clone(), cache_size_bytes: None },
                         Writability::Writable,
