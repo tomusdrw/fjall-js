@@ -23,14 +23,18 @@ function run(workerData: Record<string, unknown>): Promise<any> {
 }
 
 describe('cross-worker shared engine', () => {
-  it('a reader worker sees a writer worker’s insert live (no cross-process)', async () => {
+  it('a reader worker sees a writer worker’s UN-persisted insert live (proves one shared engine)', async () => {
     // Main thread creates the engine first so both workers attach to it.
     const ks = await open({ path: dir });
     await ks.partition('shared');
 
-    const writer = run({ role: 'writer', path: dir, key: 'wk', value: 'wv' });
-    await writer;
-    const reader = await run({ role: 'reader', path: dir, key: 'wk', value: 'wv' });
+    // Run both workers concurrently. The writer never persists, so the only way
+    // the reader can observe the value is through the one shared in-process
+    // engine's memtable — a separate per-worker engine reading disk could not.
+    const [, reader] = await Promise.all([
+      run({ role: 'writer', path: dir, key: 'wk', value: 'wv' }),
+      run({ role: 'reader', path: dir, key: 'wk', value: 'wv' }),
+    ]);
     expect(reader.seen).toBe('wv');
 
     await ks.close();
