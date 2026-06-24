@@ -16,9 +16,6 @@ pub struct EngineConfig {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Writability {
     Writable,
-    // Constructed by open_readonly (Task B3) and the tests; until B3 wires the
-    // readonly napi entry point, the non-test build sees only Writable.
-    #[allow(dead_code)]
     ReadOnly,
 }
 

@@ -199,3 +199,74 @@ impl Partition {
         Ok(())
     }
 }
+
+/// Open (or attach to) the shared engine for `config.path` with a read-only
+/// surface. May be the first opener (fjall always opens read-write underneath).
+#[napi]
+pub async fn open_readonly(config: DatabaseConfig) -> Result<ReadonlyKeyspace> {
+    let cfg = to_engine_config(&config);
+    let state = napi::tokio::task::spawn_blocking(move || {
+        attach_or_create(cfg, Writability::ReadOnly)
+    })
+    .await
+    .map_err(join_err)?
+    .map_err(map_err)?;
+    Ok(ReadonlyKeyspace { state })
+}
+
+#[napi]
+pub struct ReadonlyKeyspace {
+    state: Arc<HandleState>,
+}
+
+#[napi]
+impl ReadonlyKeyspace {
+    #[napi]
+    pub async fn partition(&self, name: String) -> Result<ReadonlyPartition> {
+        let state = self.state.clone();
+        let n = name.clone();
+        napi::tokio::task::spawn_blocking(move || open_partition(&state, &n))
+            .await
+            .map_err(join_err)?
+            .map_err(map_err)?;
+        Ok(ReadonlyPartition {
+            state: self.state.clone(),
+            name,
+        })
+    }
+
+    #[napi]
+    pub async fn close(&self) -> Result<()> {
+        let state = self.state.clone();
+        napi::tokio::task::spawn_blocking(move || release(&state))
+            .await
+            .map_err(join_err)?;
+        Ok(())
+    }
+}
+
+impl Drop for ReadonlyKeyspace {
+    fn drop(&mut self) {
+        warn_if_unclosed(&self.state, "ReadonlyKeyspace");
+    }
+}
+
+#[napi]
+pub struct ReadonlyPartition {
+    state: Arc<HandleState>,
+    name: String,
+}
+
+#[napi]
+impl ReadonlyPartition {
+    /// Sync read. Reflects writes committed by any handle of the engine.
+    #[napi]
+    pub fn get(&self, key: Uint8Array) -> Result<Option<Buffer>> {
+        let part = resolve_partition(&self.state, &self.name).map_err(map_err)?;
+        match part.get(key.as_ref()) {
+            Ok(Some(slice)) => Ok(Some(Buffer::from(slice.as_ref().to_vec()))),
+            Ok(None) => Ok(None),
+            Err(e) => Err(Error::from_reason(e.to_string())),
+        }
+    }
+}
