@@ -55,7 +55,7 @@ impl Drop for Engine {
     fn drop(&mut self) {
         // Frees keyspace + all partition handles together (subsumes the old
         // partition-leak fix). May briefly block joining fjall background
-        // threads; releases the fjall directory lock. Does NOT persist.
+        // threads. Does NOT persist (fjall holds no dir lock to release).
         #[cfg(test)]
         DROP_COUNT.fetch_add(1, Ordering::SeqCst);
     }
@@ -100,6 +100,8 @@ fn open_fjall(cfg: &EngineConfig) -> Result<fjall::Keyspace, EngineError> {
     // canonical-path registry above. Divergent path spellings of the same dir,
     // or a second process, are unguarded and can corrupt — a documented
     // limitation: pass an identical path from every worker, one process per dir.
+    // Callers that need hard double-open protection must provide their own
+    // mechanism (e.g. an OS advisory lockfile on the data directory).
     config.open().map_err(|e| EngineError::Fjall(e.to_string()))
 }
 
@@ -245,20 +247,37 @@ pub fn release(state: &Arc<HandleState>) {
                 writable,
                 ..
             }) => {
+                debug_assert!(*refs > 0, "release: refs underflow (double-decrement?)");
                 *refs -= 1;
                 if state.writable && *writable > 0 {
                     *writable -= 1;
                 }
                 *refs == 0
             }
-            _ => return, // already torn down / not live; we've already marked closed
+            // A handle is only handed out after its slot is Live, and the slot
+            // stays Live while the handle is open (it counts in `refs`); the CAS
+            // above guarantees this is the first release. So a first release always
+            // finds Live. Any other state is a broken invariant: loud in debug,
+            // graceful in release (don't crash a live node — at worst leak one ref).
+            _ => {
+                debug_assert!(false, "release: handle's slot is not Live");
+                return;
+            }
         };
         if is_last {
             // Take the engine out under a TearingDown marker so a concurrent
             // attach_or_create parks instead of racing the dir-lock release.
             match reg.insert(state.key.clone(), Slot::TearingDown) {
                 Some(Slot::Live { engine, .. }) => Some(engine),
-                _ => None,
+                // We just read Live under this same lock and never released it, so
+                // insert must return that Live. Anything else is a broken invariant:
+                // assert in debug; in release, undo our TearingDown so the key isn't
+                // wedged for future opens.
+                _ => {
+                    debug_assert!(false, "release: Live slot changed under the registry lock");
+                    reg.remove(&state.key);
+                    None
+                }
             }
         } else {
             None
