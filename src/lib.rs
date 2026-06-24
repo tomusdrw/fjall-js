@@ -1,3 +1,12 @@
+//! Thin napi surface over the [`engine`] module (the shared-engine registry).
+//!
+//! Each `Keyspace`/`ReadonlyKeyspace`/`Partition`/`ReadonlyPartition` is a handle
+//! holding an `Arc<engine::HandleState>`. Blocking engine calls run inside
+//! `spawn_blocking`; only `get` is synchronous. `EngineError` is mapped to
+//! `napi::Error`. A keyspace `Drop` calls `engine::warn_if_unclosed` — it never
+//! tears the engine down (that is `close()`'s job; see the engine module docs for
+//! the leak-on-forgotten-close contract).
+
 mod engine;
 
 use std::sync::Arc;

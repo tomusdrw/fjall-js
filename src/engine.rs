@@ -1,7 +1,43 @@
+//! Process-global shared LSM engine registry — the heart of fjall-js's
+//! "one engine per path, shared across Node `worker_threads`" model.
+//!
+//! Deliberately **sync and napi-free** (`std` + `fjall` only) so the concurrency
+//! can be unit-tested with plain threads. The napi layer ([`crate`]'s `lib.rs`)
+//! is a thin wrapper that calls into here via `spawn_blocking`.
+//!
+//! # Ownership model
+//! - A process-global [`REGISTRY`] maps a canonical filesystem path to a [`Slot`].
+//!   The registry **owns** the one strong `Arc<Engine>` per live path, plus an
+//!   integer `refs` = the number of un-closed handles.
+//! - Each napi handle holds a [`HandleState`] with a `Weak<Engine>` and a shared
+//!   `closed` flag — **never** a strong engine ref. So the engine's lifetime is
+//!   driven entirely by the registry refcount, not by GC.
+//! - [`attach_or_create`] returns a handle, creating the engine on first open or
+//!   attaching (`refs += 1`) otherwise; [`release`] drops a handle (`refs -= 1`)
+//!   and, on the last one, tears the engine down deterministically.
+//!
+//! # Concurrency
+//! The [`Slot`] is a state machine — `Creating` / `Live` / `TearingDown` — guarded
+//! by the registry `Mutex` + a `Condvar`. Concurrent opens of one path serialize
+//! through `Creating` (exactly one real `fjall::open`); a concurrent open during
+//! teardown parks on `TearingDown` until the engine is gone. The registry lock is
+//! **never** held across the blocking `fjall::open` or across the engine `Drop`
+//! (which joins fjall background threads); every state-changing exit calls
+//! `notify_all`.
+//!
+//! # Two deliberate non-guarantees (see the README "Concurrency, sharing & safety")
+//! - **No directory lock.** fjall 2.x takes none, so sharing is enforced *only* by
+//!   this registry. Opening one directory via divergent path spellings, or from a
+//!   second process, is unguarded and can corrupt — callers must provide their own
+//!   lockfile, and pass an identical path from every worker.
+//! - **No GC reclamation.** A handle dropped without [`release`] leaks its engine
+//!   for the process lifetime (a stderr warning is emitted). Calling `close()` on
+//!   every handle is mandatory; it is the only path that frees native memory.
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak};
 
 // AtomicUsize backs only the test-only DROP_COUNT observer below.
 #[cfg(test)]
@@ -89,6 +125,14 @@ fn cv() -> &'static Condvar {
     CV.get_or_init(Condvar::new)
 }
 
+/// Lock a mutex, tolerating poison. Our critical sections never panic while
+/// holding the registry or partitions lock, so a poisoned guard can only come
+/// from an unrelated panic and the data is still consistent to use — far better
+/// than panicking here and wedging the whole engine subsystem for the process.
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn open_fjall(cfg: &EngineConfig) -> Result<fjall::Keyspace, EngineError> {
     let mut config = fjall::Config::new(&cfg.path);
     if let Some(bytes) = cfg.cache_size_bytes {
@@ -116,7 +160,7 @@ pub fn attach_or_create(
         // Re-derive the key every iteration: after a concurrent creator finishes,
         // the directory exists and a best-effort key resolves to the canonical one.
         let key = canonical_key(&cfg.path);
-        let mut reg = registry().lock().unwrap();
+        let mut reg = lock(registry());
         let mut should_wait = false;
 
         match reg.get_mut(&key) {
@@ -165,7 +209,7 @@ pub fn attach_or_create(
                 .wait_while(reg, |r| {
                     matches!(r.get(&key), Some(Slot::Creating) | Some(Slot::TearingDown))
                 })
-                .unwrap();
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             continue;
         }
         drop(reg);
@@ -174,7 +218,7 @@ pub fn attach_or_create(
         match open_fjall(&cfg) {
             Ok(keyspace) => {
                 let canon = canonical_key(&cfg.path); // dir now exists
-                let mut reg = registry().lock().unwrap();
+                let mut reg = lock(registry());
                 reg.remove(&key);
                 let result = match reg.get_mut(&canon) {
                     Some(Slot::Live {
@@ -216,7 +260,7 @@ pub fn attach_or_create(
                 }));
             }
             Err(e) => {
-                let mut reg = registry().lock().unwrap();
+                let mut reg = lock(registry());
                 reg.remove(&key);
                 cv().notify_all();
                 return Err(e);
@@ -239,7 +283,7 @@ pub fn release(state: &Arc<HandleState>) {
     }
 
     let engine_to_drop: Option<Arc<Engine>> = {
-        let mut reg = registry().lock().unwrap();
+        let mut reg = lock(registry());
         // Decrement first and compute is_last; this ends the get_mut borrow
         // before we re-borrow reg to insert the TearingDown marker.
         let is_last = match reg.get_mut(&state.key) {
@@ -287,7 +331,7 @@ pub fn release(state: &Arc<HandleState>) {
 
     if let Some(engine) = engine_to_drop {
         drop(engine); // joins fjall background threads (fjall holds no dir lock)
-        let mut reg = registry().lock().unwrap();
+        let mut reg = lock(registry());
         reg.remove(&state.key);
         cv().notify_all();
     }
@@ -302,7 +346,7 @@ fn live_engine(state: &Arc<HandleState>) -> Result<Arc<Engine>, EngineError> {
 
 pub fn open_partition(state: &Arc<HandleState>, name: &str) -> Result<(), EngineError> {
     let engine = live_engine(state)?;
-    let mut parts = engine.partitions.lock().unwrap();
+    let mut parts = lock(&engine.partitions);
     if !parts.contains_key(name) {
         let handle = engine
             .keyspace
@@ -318,7 +362,7 @@ pub fn resolve_partition(
     name: &str,
 ) -> Result<fjall::PartitionHandle, EngineError> {
     let engine = live_engine(state)?;
-    let parts = engine.partitions.lock().unwrap();
+    let parts = lock(&engine.partitions);
     parts.get(name).cloned().ok_or(EngineError::Closed)
 }
 
@@ -396,7 +440,7 @@ mod tests {
     }
 
     fn refs_for(key: &CanonicalKey) -> usize {
-        let reg = registry().lock().unwrap();
+        let reg = lock(registry());
         match reg.get(key) {
             Some(Slot::Live { refs, .. }) => *refs,
             _ => 0,
