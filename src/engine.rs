@@ -64,9 +64,7 @@ impl Drop for Engine {
 pub struct HandleState {
     pub(crate) engine: Weak<Engine>,
     pub(crate) key: CanonicalKey,
-    #[allow(dead_code)]
     pub(crate) closed: AtomicBool,
-    #[allow(dead_code)]
     pub(crate) writable: bool,
 }
 
@@ -77,7 +75,6 @@ pub enum Slot {
         refs: usize,
         writable: usize,
     },
-    #[allow(dead_code)]
     TearingDown,
 }
 
@@ -225,6 +222,57 @@ pub fn attach_or_create(
     }
 }
 
+/// Drop this handle's reference. Idempotent. On the last handle for an engine,
+/// tears the engine down deterministically (outside the registry lock).
+/// Blocking; the napi layer calls this inside `spawn_blocking`.
+pub fn release(state: &Arc<HandleState>) {
+    // First close wins; later calls (incl. GC after an explicit close) are no-ops.
+    if state
+        .closed
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return;
+    }
+
+    let engine_to_drop: Option<Arc<Engine>> = {
+        let mut reg = registry().lock().unwrap();
+        // Decrement first and compute is_last; this ends the get_mut borrow
+        // before we re-borrow reg to insert the TearingDown marker.
+        let is_last = match reg.get_mut(&state.key) {
+            Some(Slot::Live {
+                refs,
+                writable,
+                ..
+            }) => {
+                *refs -= 1;
+                if state.writable && *writable > 0 {
+                    *writable -= 1;
+                }
+                *refs == 0
+            }
+            _ => return, // already torn down / not live; we've already marked closed
+        };
+        if is_last {
+            // Take the engine out under a TearingDown marker so a concurrent
+            // attach_or_create parks instead of racing the dir-lock release.
+            match reg.insert(state.key.clone(), Slot::TearingDown) {
+                Some(Slot::Live { engine, .. }) => Some(engine),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    };
+
+    if let Some(engine) = engine_to_drop {
+        drop(engine); // joins fjall background threads (fjall holds no dir lock)
+        let mut reg = registry().lock().unwrap();
+        reg.remove(&state.key);
+        cv().notify_all();
+    }
+}
+
 pub type CanonicalKey = PathBuf;
 
 /// Best-effort canonical registry key. Resolves symlinks/case/relative parts
@@ -339,5 +387,62 @@ mod tests {
         // The existing tmp prefix is canonicalized; the missing tail is preserved.
         let canon_tmp = fs::canonicalize(tmp.path()).unwrap();
         assert_eq!(key, canon_tmp.join("not-yet").join("db"));
+    }
+
+    // Serializes tests that make relative-delta assertions on the process-global
+    // DROP_COUNT so they cannot race each other.
+    static DROP_COUNT_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn drop_count() -> usize {
+        DROP_COUNT.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn lock_drop_count_guard() -> std::sync::MutexGuard<'static, ()> {
+        DROP_COUNT_GUARD.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[test]
+    fn last_release_drops_engine_deterministically() {
+        let _g = lock_drop_count_guard();
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("db");
+        let before = drop_count();
+
+        let h1 = attach_or_create(cfg(&p), Writability::Writable).unwrap();
+        let h2 = attach_or_create(cfg(&p), Writability::ReadOnly).unwrap();
+
+        release(&h1);
+        assert_eq!(drop_count(), before, "engine alive while a handle remains");
+        assert!(h2.engine.upgrade().is_some());
+
+        release(&h2);
+        assert_eq!(drop_count(), before + 1, "engine dropped on the last release");
+        assert_eq!(refs_for(&h1.key), 0, "slot is gone");
+    }
+
+    #[test]
+    fn release_is_idempotent() {
+        let _g = lock_drop_count_guard();
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("db");
+        let before = drop_count();
+        let h = attach_or_create(cfg(&p), Writability::Writable).unwrap();
+        release(&h);
+        release(&h); // double close: must be a no-op
+        assert_eq!(drop_count(), before + 1);
+    }
+
+    #[test]
+    fn reopen_after_last_release_creates_fresh_engine() {
+        let _g = lock_drop_count_guard();
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("db");
+        let h1 = attach_or_create(cfg(&p), Writability::Writable).unwrap();
+        let id1 = h1.engine.upgrade().unwrap().ptr_id();
+        release(&h1);
+        let h2 = attach_or_create(cfg(&p), Writability::Writable).unwrap();
+        let id2 = h2.engine.upgrade().unwrap().ptr_id();
+        assert_ne!(id1, id2, "a fresh engine is created after teardown");
+        release(&h2);
     }
 }
