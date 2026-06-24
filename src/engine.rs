@@ -19,7 +19,6 @@ pub enum Writability {
 pub enum EngineError {
     #[allow(dead_code)]
     Closed,
-    DirLocked,
     Fjall(String),
 }
 
@@ -27,7 +26,6 @@ impl std::fmt::Display for EngineError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             EngineError::Closed => write!(f, "Keyspace is closed"),
-            EngineError::DirLocked => write!(f, "database directory is locked"),
             EngineError::Fjall(e) => write!(f, "{e}"),
         }
     }
@@ -100,16 +98,12 @@ fn open_fjall(cfg: &EngineConfig) -> Result<fjall::Keyspace, EngineError> {
             config = config.cache_size(bytes);
         }
     }
-    config.open().map_err(|e| {
-        let msg = e.to_string();
-        // fjall reports a held directory lock as an IO/lock error; treat it as
-        // retryable so a race loser can attach instead of failing.
-        if msg.to_lowercase().contains("lock") {
-            EngineError::DirLocked
-        } else {
-            EngineError::Fjall(msg)
-        }
-    })
+    // NOTE: fjall 2.x takes no OS directory lock, so a second open of the same
+    // directory does not error here. Engine sharing is enforced ONLY by the
+    // canonical-path registry above. Divergent path spellings of the same dir,
+    // or a second process, are unguarded and can corrupt — a documented
+    // limitation: pass an identical path from every worker, one process per dir.
+    config.open().map_err(|e| EngineError::Fjall(e.to_string()))
 }
 
 /// Attach to the shared engine for `cfg.path`, creating it if none exists.
@@ -220,16 +214,6 @@ pub fn attach_or_create(
                     closed: AtomicBool::new(false),
                     writable: w == Writability::Writable,
                 }));
-            }
-            Err(EngineError::DirLocked) => {
-                // Another opener created it under a different spelling; clean up,
-                // wake any waiters, and retry — the dir now exists so the key
-                // re-derivation will find the Live slot.
-                let mut reg = registry().lock().unwrap();
-                reg.remove(&key);
-                cv().notify_all();
-                drop(reg);
-                continue;
             }
             Err(e) => {
                 let mut reg = registry().lock().unwrap();
