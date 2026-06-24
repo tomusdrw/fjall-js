@@ -17,7 +17,6 @@ pub enum Writability {
 
 #[derive(Debug)]
 pub enum EngineError {
-    #[allow(dead_code)]
     Closed,
     Fjall(String),
 }
@@ -35,9 +34,7 @@ impl std::fmt::Display for EngineError {
 static DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 pub struct Engine {
-    #[allow(dead_code)]
     keyspace: fjall::Keyspace,
-    #[allow(dead_code)]
     partitions: Mutex<HashMap<String, fjall::PartitionHandle>>,
     #[allow(dead_code)]
     key: CanonicalKey,
@@ -292,6 +289,56 @@ pub fn release(state: &Arc<HandleState>) {
     }
 }
 
+fn live_engine(state: &Arc<HandleState>) -> Result<Arc<Engine>, EngineError> {
+    if state.closed.load(Ordering::SeqCst) {
+        return Err(EngineError::Closed);
+    }
+    state.engine.upgrade().ok_or(EngineError::Closed)
+}
+
+pub fn open_partition(state: &Arc<HandleState>, name: &str) -> Result<(), EngineError> {
+    let engine = live_engine(state)?;
+    let mut parts = engine.partitions.lock().unwrap();
+    if !parts.contains_key(name) {
+        let handle = engine
+            .keyspace
+            .open_partition(name, fjall::PartitionCreateOptions::default())
+            .map_err(|e| EngineError::Fjall(e.to_string()))?;
+        parts.insert(name.to_string(), handle);
+    }
+    Ok(())
+}
+
+pub fn resolve_partition(
+    state: &Arc<HandleState>,
+    name: &str,
+) -> Result<fjall::PartitionHandle, EngineError> {
+    let engine = live_engine(state)?;
+    let parts = engine.partitions.lock().unwrap();
+    parts.get(name).cloned().ok_or(EngineError::Closed)
+}
+
+#[allow(dead_code)]
+pub fn with_keyspace<T>(
+    state: &Arc<HandleState>,
+    f: impl FnOnce(&fjall::Keyspace) -> T,
+) -> Result<T, EngineError> {
+    let engine = live_engine(state)?;
+    Ok(f(&engine.keyspace))
+}
+
+/// Emit a one-line stderr warning if this handle was dropped without release().
+/// Never touches a JS Env (safe from a finalizer). Does NOT release.
+#[allow(dead_code)]
+pub fn warn_if_unclosed(state: &Arc<HandleState>, label: &str) {
+    if !state.closed.load(Ordering::SeqCst) {
+        eprintln!(
+            "fjall: {label} for {:?} was dropped without close(); engine leaked for the process lifetime. Call close().",
+            state.key
+        );
+    }
+}
+
 pub type CanonicalKey = PathBuf;
 
 /// Best-effort canonical registry key. Resolves symlinks/case/relative parts
@@ -530,6 +577,39 @@ mod tests {
         let ids: Vec<usize> = threads.into_iter().map(|t| t.join().unwrap()).collect();
         assert!(ids.iter().all(|id| *id == ids[0]), "all share one engine: {ids:?}");
         assert_eq!(refs_for(&canonical_key(&p)), 8);
+    }
+
+    #[test]
+    fn writes_on_one_handle_are_live_on_another_without_persist() {
+        let _drop_guard = DROP_COUNT_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("db");
+        let writer = attach_or_create(cfg(&p), Writability::Writable).unwrap();
+        let reader = attach_or_create(cfg(&p), Writability::ReadOnly).unwrap();
+
+        open_partition(&writer, "items").unwrap();
+        open_partition(&reader, "items").unwrap();
+
+        let wp = resolve_partition(&writer, "items").unwrap();
+        wp.insert(b"k", b"v").unwrap();
+
+        // No persist — visibility is in-memory via the shared engine.
+        let rp = resolve_partition(&reader, "items").unwrap();
+        assert_eq!(rp.get(b"k").unwrap().as_deref(), Some(&b"v"[..]));
+
+        release(&writer);
+        release(&reader);
+    }
+
+    #[test]
+    fn resolve_partition_on_closed_handle_errors() {
+        let _drop_guard = DROP_COUNT_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("db");
+        let h = attach_or_create(cfg(&p), Writability::Writable).unwrap();
+        open_partition(&h, "items").unwrap();
+        release(&h);
+        assert!(matches!(resolve_partition(&h, "items"), Err(EngineError::Closed)));
     }
 
     #[test]
