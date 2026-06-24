@@ -1,7 +1,11 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
+
+// AtomicUsize backs only the test-only DROP_COUNT observer below.
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
 
 #[derive(Clone)]
 pub struct EngineConfig {
@@ -12,6 +16,9 @@ pub struct EngineConfig {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Writability {
     Writable,
+    // Constructed by open_readonly (Task B3) and the tests; until B3 wires the
+    // readonly napi entry point, the non-test build sees only Writable.
+    #[allow(dead_code)]
     ReadOnly,
 }
 
