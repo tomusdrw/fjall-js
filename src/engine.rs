@@ -464,4 +464,47 @@ mod tests {
         assert_ne!(id1, id2, "a fresh engine is created after teardown");
         release(&h2);
     }
+
+    #[test]
+    fn symlink_alias_attaches_to_one_engine() {
+        let _drop_guard = DROP_COUNT_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = tmp.path().join("link");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        #[cfg(not(unix))]
+        return; // symlink test is unix-only
+
+        let h_real = attach_or_create(cfg(&real), Writability::Writable).unwrap();
+        let h_link = attach_or_create(cfg(&link), Writability::ReadOnly).unwrap();
+        assert_eq!(
+            h_real.engine.upgrade().unwrap().ptr_id(),
+            h_link.engine.upgrade().unwrap().ptr_id()
+        );
+        release(&h_real);
+        release(&h_link);
+    }
+
+    #[test]
+    fn case_variant_attaches_to_one_engine_on_case_insensitive_fs() {
+        let _drop_guard = DROP_COUNT_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let lower = tmp.path().join("casedb");
+        std::fs::create_dir(&lower).unwrap();
+        let upper = tmp.path().join("CASEDB");
+        // Only meaningful where the FS is case-insensitive (macOS APFS default).
+        if std::fs::canonicalize(&upper).is_err() {
+            return; // case-sensitive FS: skip
+        }
+        let h_lower = attach_or_create(cfg(&lower), Writability::Writable).unwrap();
+        let h_upper = attach_or_create(cfg(&upper), Writability::ReadOnly).unwrap();
+        assert_eq!(
+            h_lower.engine.upgrade().unwrap().ptr_id(),
+            h_upper.engine.upgrade().unwrap().ptr_id()
+        );
+        release(&h_lower);
+        release(&h_upper);
+    }
 }
