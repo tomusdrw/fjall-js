@@ -20,7 +20,9 @@ pub fn canonical_key(path: &Path) -> CanonicalKey {
             .unwrap_or_else(|_| path.to_path_buf())
     };
     let mut ancestor = abs.as_path();
-    let mut tail: Vec<&std::ffi::OsStr> = Vec::new();
+    // Own each component so the tail can't dangle into `abs` as the loop reassigns
+    // `ancestor`; the path is short, so the per-component clone is negligible.
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
     loop {
         if let Ok(c) = std::fs::canonicalize(ancestor) {
             let mut key = c;
@@ -31,7 +33,7 @@ pub fn canonical_key(path: &Path) -> CanonicalKey {
         }
         match (ancestor.file_name(), ancestor.parent()) {
             (Some(name), Some(parent)) => {
-                tail.push(name);
+                tail.push(name.to_os_string());
                 ancestor = parent;
             }
             _ => return abs, // hit the root with nothing canonicalizable; lexical absolute
@@ -44,18 +46,29 @@ mod tests {
     use super::*;
     use std::fs;
 
+    // Serializes tests that mutate process-global cwd so they can't race the
+    // (parallel-by-default) test harness as more tests are added to this module.
+    static CWD_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn existing_dir_canonicalizes_to_same_key_for_relative_and_absolute() {
+        let _serial = CWD_GUARD.lock().unwrap();
         let tmp = tempfile::tempdir().unwrap();
         let abs = tmp.path().join("db");
         fs::create_dir(&abs).unwrap();
 
-        let prev = std::env::current_dir().unwrap();
+        // Restore cwd on scope exit even if an assertion panics.
+        struct RestoreCwd(PathBuf);
+        impl Drop for RestoreCwd {
+            fn drop(&mut self) {
+                let _ = std::env::set_current_dir(&self.0);
+            }
+        }
+        let _restore = RestoreCwd(std::env::current_dir().unwrap());
+
         std::env::set_current_dir(tmp.path()).unwrap();
         let via_rel = canonical_key(Path::new("db"));
-        std::env::set_current_dir(&prev).unwrap();
-
-        let via_abs = canonical_key(&abs);
+        let via_abs = canonical_key(&abs); // absolute spelling — unaffected by cwd
         assert_eq!(via_rel, via_abs, "relative and absolute spellings must match");
     }
 
