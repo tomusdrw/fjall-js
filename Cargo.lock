@@ -170,6 +170,7 @@ dependencies = [
  "napi",
  "napi-build",
  "napi-derive",
+ "tempfile",
 ]
 
 [[package]]

@@ -507,4 +507,54 @@ mod tests {
         release(&h_lower);
         release(&h_upper);
     }
+
+    #[test]
+    fn concurrent_first_open_creates_exactly_one_engine() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("db");
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let mut threads = Vec::new();
+        for _ in 0..8 {
+            let p = p.clone();
+            let b = barrier.clone();
+            threads.push(std::thread::spawn(move || {
+                b.wait();
+                let h = attach_or_create(
+                    EngineConfig { path: p, cache_size_bytes: None },
+                    Writability::ReadOnly,
+                )
+                .unwrap();
+                h.engine.upgrade().unwrap().ptr_id()
+            }));
+        }
+        let ids: Vec<usize> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+        assert!(ids.iter().all(|id| *id == ids[0]), "all share one engine: {ids:?}");
+        assert_eq!(refs_for(&canonical_key(&p)), 8);
+    }
+
+    #[test]
+    fn teardown_reopen_race_never_errors() {
+        let _drop_guard = DROP_COUNT_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("db");
+        let mut threads = Vec::new();
+        for _ in 0..6 {
+            let p = p.clone();
+            threads.push(std::thread::spawn(move || {
+                for _ in 0..50 {
+                    let h = attach_or_create(
+                        EngineConfig { path: p.clone(), cache_size_bytes: None },
+                        Writability::Writable,
+                    )
+                    .expect("open must not error under teardown/reopen race");
+                    release(&h);
+                }
+            }));
+        }
+        for t in threads {
+            t.join().unwrap();
+        }
+        // All handles released → no live slot remains for this path.
+        assert_eq!(refs_for(&canonical_key(&p)), 0);
+    }
 }
