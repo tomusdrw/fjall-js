@@ -1,6 +1,6 @@
 {
   "name": "@fjall-js/fjall-darwin-arm64",
-  "version": "0.2.0",
+  "version": "0.3.1",
   "os": [
     "darwin"
   ],
