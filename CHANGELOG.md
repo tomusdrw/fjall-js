@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.3.2
+
+Fixes a native crash (`EXC_BAD_ACCESS` / `SIGSEGV`) when the database is used from
+multiple Node `worker_threads` concurrently.
+
+### Fixed
+
+- **Worker-thread crash.** Operations were exposed as napi-rs `async fn`s, which run
+  on a process-global tokio runtime and resolve their JS promise through a
+  cross-thread ThreadSafeFunction. Under many concurrent `worker_threads` Envs this
+  raced against the per-Env V8 isolate and crashed the whole process (faulting inside
+  `napi_create_reference` / `GlobalHandles::Create` / promise resolution). Every
+  operation now runs as a napi `Task` on libuv's async-work pool and resolves on its
+  owning Env's thread — no shared runtime, no cross-thread deferred. The public
+  `Promise`-based API is unchanged.
+- A panic inside a background operation is now surfaced as a rejected promise instead
+  of aborting the process.
+
+### Operational note
+
+- Async operations now run on **libuv's thread pool** (`UV_THREADPOOL_SIZE`, default
+  **4**, shared process-wide with `fs`/`dns`/`crypto`) rather than a dedicated pool.
+  For write-heavy or highly concurrent workloads, raise `UV_THREADPOOL_SIZE`.
+
 ## 0.3.0
 
 One shared engine across Node `worker_threads`, a read-only handle type, and deterministic refcounted `close()`.
