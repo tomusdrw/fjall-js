@@ -65,12 +65,11 @@ fn to_engine_config(c: &DatabaseConfig) -> EngineConfig {
 #[napi]
 pub async fn open(config: DatabaseConfig) -> Result<Keyspace> {
     let cfg = to_engine_config(&config);
-    let state = napi::tokio::task::spawn_blocking(move || {
-        attach_or_create(cfg, Writability::Writable)
-    })
-    .await
-    .map_err(join_err)?
-    .map_err(map_err)?;
+    let state =
+        napi::tokio::task::spawn_blocking(move || attach_or_create(cfg, Writability::Writable))
+            .await
+            .map_err(join_err)?
+            .map_err(map_err)?;
     Ok(Keyspace { state })
 }
 
@@ -99,13 +98,11 @@ impl Keyspace {
     pub async fn persist(&self, mode: Option<String>) -> Result<()> {
         let mode = parse_persist_mode(mode.as_deref())?;
         let state = self.state.clone();
-        napi::tokio::task::spawn_blocking(move || {
-            with_keyspace(&state, |ks| ks.persist(mode))
-        })
-        .await
-        .map_err(join_err)?
-        .map_err(map_err)?
-        .map_err(|e| Error::from_reason(e.to_string()))?;
+        napi::tokio::task::spawn_blocking(move || with_keyspace(&state, |ks| ks.persist(mode)))
+            .await
+            .map_err(join_err)?
+            .map_err(map_err)?
+            .map_err(|e| Error::from_reason(e.to_string()))?;
         Ok(())
     }
 
@@ -159,7 +156,8 @@ impl Partition {
         let value = value.as_ref().to_vec();
         napi::tokio::task::spawn_blocking(move || -> Result<()> {
             let part = resolve_partition(&state, &name).map_err(map_err)?;
-            part.insert(key, value).map_err(|e| Error::from_reason(e.to_string()))
+            part.insert(key, value)
+                .map_err(|e| Error::from_reason(e.to_string()))
         })
         .await
         .map_err(join_err)??;
@@ -173,7 +171,8 @@ impl Partition {
         let key = key.as_ref().to_vec();
         napi::tokio::task::spawn_blocking(move || -> Result<()> {
             let part = resolve_partition(&state, &name).map_err(map_err)?;
-            part.remove(key).map_err(|e| Error::from_reason(e.to_string()))
+            part.remove(key)
+                .map_err(|e| Error::from_reason(e.to_string()))
         })
         .await
         .map_err(join_err)??;
@@ -214,12 +213,11 @@ impl Partition {
 #[napi]
 pub async fn open_readonly(config: DatabaseConfig) -> Result<ReadonlyKeyspace> {
     let cfg = to_engine_config(&config);
-    let state = napi::tokio::task::spawn_blocking(move || {
-        attach_or_create(cfg, Writability::ReadOnly)
-    })
-    .await
-    .map_err(join_err)?
-    .map_err(map_err)?;
+    let state =
+        napi::tokio::task::spawn_blocking(move || attach_or_create(cfg, Writability::ReadOnly))
+            .await
+            .map_err(join_err)?
+            .map_err(map_err)?;
     Ok(ReadonlyKeyspace { state })
 }
 

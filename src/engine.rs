@@ -70,7 +70,10 @@ impl std::fmt::Display for EngineError {
         match self {
             EngineError::Closed => write!(f, "Keyspace is closed"),
             EngineError::PartitionNotFound(name) => {
-                write!(f, "partition '{name}' is not open; call partition('{name}') first")
+                write!(
+                    f,
+                    "partition '{name}' is not open; call partition('{name}') first"
+                )
             }
             EngineError::Fjall(e) => write!(f, "{e}"),
         }
@@ -294,11 +297,7 @@ pub fn release(state: &Arc<HandleState>) {
         // Decrement first and compute is_last; this ends the get_mut borrow
         // before we re-borrow reg to insert the TearingDown marker.
         let is_last = match reg.get_mut(&state.key) {
-            Some(Slot::Live {
-                refs,
-                writable,
-                ..
-            }) => {
+            Some(Slot::Live { refs, writable, .. }) => {
                 debug_assert!(*refs > 0, "release: refs underflow (double-decrement?)");
                 *refs -= 1;
                 if state.writable && *writable > 0 {
@@ -446,7 +445,10 @@ mod tests {
     static CWD_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn cfg(path: &Path) -> EngineConfig {
-        EngineConfig { path: path.to_path_buf(), cache_size_bytes: None }
+        EngineConfig {
+            path: path.to_path_buf(),
+            cache_size_bytes: None,
+        }
     }
 
     fn refs_for(key: &CanonicalKey) -> usize {
@@ -500,7 +502,10 @@ mod tests {
         std::env::set_current_dir(tmp.path()).unwrap();
         let via_rel = canonical_key(Path::new("db"));
         let via_abs = canonical_key(&abs); // absolute spelling — unaffected by cwd
-        assert_eq!(via_rel, via_abs, "relative and absolute spellings must match");
+        assert_eq!(
+            via_rel, via_abs,
+            "relative and absolute spellings must match"
+        );
     }
 
     #[test]
@@ -540,7 +545,11 @@ mod tests {
         assert!(h2.engine.upgrade().is_some());
 
         release(&h2);
-        assert_eq!(drop_count(), before + 1, "engine dropped on the last release");
+        assert_eq!(
+            drop_count(),
+            before + 1,
+            "engine dropped on the last release"
+        );
         assert_eq!(refs_for(&h1.key), 0, "slot is gone");
     }
 
@@ -625,7 +634,10 @@ mod tests {
             threads.push(std::thread::spawn(move || {
                 b.wait();
                 let h = attach_or_create(
-                    EngineConfig { path: p, cache_size_bytes: None },
+                    EngineConfig {
+                        path: p,
+                        cache_size_bytes: None,
+                    },
                     Writability::ReadOnly,
                 )
                 .unwrap();
@@ -633,7 +645,10 @@ mod tests {
             }));
         }
         let ids: Vec<usize> = threads.into_iter().map(|t| t.join().unwrap()).collect();
-        assert!(ids.iter().all(|id| *id == ids[0]), "all share one engine: {ids:?}");
+        assert!(
+            ids.iter().all(|id| *id == ids[0]),
+            "all share one engine: {ids:?}"
+        );
         assert_eq!(refs_for(&canonical_key(&p)), 8);
     }
 
@@ -675,7 +690,10 @@ mod tests {
         let h = attach_or_create(cfg(&p), Writability::Writable).unwrap();
         open_partition(&h, "items").unwrap();
         release(&h);
-        assert!(matches!(resolve_partition(&h, "items"), Err(EngineError::Closed)));
+        assert!(matches!(
+            resolve_partition(&h, "items"),
+            Err(EngineError::Closed)
+        ));
     }
 
     #[test]
@@ -708,7 +726,10 @@ mod tests {
                 // hammering one path still overlaps teardown with reopen many times.
                 for _ in 0..12 {
                     let h = attach_or_create(
-                        EngineConfig { path: p.clone(), cache_size_bytes: None },
+                        EngineConfig {
+                            path: p.clone(),
+                            cache_size_bytes: None,
+                        },
                         Writability::Writable,
                     )
                     .expect("open must not error under teardown/reopen race");
