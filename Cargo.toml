@@ -10,7 +10,12 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-napi = { version = "2", default-features = false, features = ["napi9", "async", "tokio_rt"] }
+# NOTE: intentionally NO "async"/"tokio_rt" features. Those route every
+# `#[napi] async fn` through a process-global tokio runtime + a cross-thread
+# ThreadSafeFunction deferred, which crashes under concurrent Node worker_threads
+# Envs. We use napi `Task`/`AsyncTask` (libuv per-Env async work) instead.
+# See src/lib.rs and .context/ROOT_CAUSE.md.
+napi = { version = "2", default-features = false, features = ["napi9"] }
 napi-derive = "2"
 fjall = "2"
 
