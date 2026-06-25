@@ -58,6 +58,10 @@ pub enum Writability {
 #[derive(Debug)]
 pub enum EngineError {
     Closed,
+    /// A partition name was resolved before it was opened. Not reachable through
+    /// the napi layer today (`partition()` always opens before any `get`/`insert`),
+    /// but kept distinct from `Closed` so the error is honest if that ever changes.
+    PartitionNotFound(String),
     Fjall(String),
 }
 
@@ -65,6 +69,9 @@ impl std::fmt::Display for EngineError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             EngineError::Closed => write!(f, "Keyspace is closed"),
+            EngineError::PartitionNotFound(name) => {
+                write!(f, "partition '{name}' is not open; call partition('{name}') first")
+            }
             EngineError::Fjall(e) => write!(f, "{e}"),
         }
     }
@@ -363,7 +370,10 @@ pub fn resolve_partition(
 ) -> Result<fjall::PartitionHandle, EngineError> {
     let engine = live_engine(state)?;
     let parts = lock(&engine.partitions);
-    parts.get(name).cloned().ok_or(EngineError::Closed)
+    parts
+        .get(name)
+        .cloned()
+        .ok_or_else(|| EngineError::PartitionNotFound(name.to_string()))
 }
 
 #[allow(dead_code)]
@@ -666,6 +676,21 @@ mod tests {
         open_partition(&h, "items").unwrap();
         release(&h);
         assert!(matches!(resolve_partition(&h, "items"), Err(EngineError::Closed)));
+    }
+
+    #[test]
+    fn resolve_partition_unknown_name_errors() {
+        let _drop_guard = DROP_COUNT_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("db");
+        let h = attach_or_create(cfg(&p), Writability::Writable).unwrap();
+        // "ghost" was never opened → a distinct PartitionNotFound, not Closed.
+        let err = resolve_partition(&h, "ghost").err();
+        assert!(
+            matches!(err, Some(EngineError::PartitionNotFound(ref n)) if n == "ghost"),
+            "expected PartitionNotFound(\"ghost\"), got {err:?}"
+        );
+        release(&h);
     }
 
     #[test]

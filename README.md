@@ -63,6 +63,8 @@ const ks = await open(config); // the one writer
 const ro = await openReadonly(config); // readers
 ```
 
+A complete, runnable version of this pattern lives in [`examples/worker-threads/`](./examples/worker-threads/) — run it with `node examples/worker-threads/main.mjs`.
+
 **⚠️ No double-open protection — you must provide your own.** fjall — and therefore this wrapper — takes **no** OS directory lock. Opening the **same directory twice via different path spellings**, or from a **second process**, is **unguarded** and **can corrupt the database**. The wrapper deliberately mirrors fjall's own behavior. **If you need a hard guarantee against double-opening a directory, set up your own mechanism — e.g. an OS advisory lockfile on the data directory — before calling `open`/`openReadonly`.** Operating rules: **one process per directory; one path spelling everywhere.**
 
 **At most one writer per path.** Keeping to a single writable handle (`open`) per path is the consumer's responsibility. A second writable handle is **warned** (to stderr), not prevented — open every reader with `openReadonly`.
@@ -185,6 +187,25 @@ export interface ReadonlyPartition {
 The default (no argument) is `'sync-data'`, matching the upstream fjall default. Cross-handle **visibility** needs no `persist` (it's in-memory via the shared engine); only on-disk **durability against power loss** does.
 
 Typical usage: write a number of values (ideally via a single `insertBatch`), then call `persist()` once at the end. The writer is responsible for persisting after a logically-complete unit of work.
+
+## Migrating from 0.2.x
+
+0.3 is a breaking change. The mechanical edits:
+
+| 0.2.x                               | 0.3.0                                                         |
+| ----------------------------------- | ------------------------------------------------------------- |
+| `open('./db')`                      | `open({ path: './db' })`                                      |
+| `open('./db', { cacheSizeBytes })`  | `open({ path: './db', cacheSizeBytes })`                      |
+| `open('./db', { ephemeral: true })` | `open({ path: './db' })` — `ephemeral` is removed (see below) |
+
+Behavioral changes to check:
+
+- **`close()` no longer flushes to disk.** Previously a non-`ephemeral` `close()` did a `sync-all`. Durability is now **persist-only**: call `await ks.persist()` before `close()` wherever you relied on close-time durability.
+- **`ephemeral` is gone.** It only controlled that close-time flush, which no longer happens — just drop the option. (Cross-handle visibility never needed it.)
+- **Readers should switch to `openReadonly(config)`.** It returns a type with no write methods and lets multiple workers share one engine safely. Keep at most one writable `open()` per path.
+- **Multiple opens of one path now share a single engine** instead of building independent ones — read [Concurrency, sharing & safety](#concurrency-sharing--safety): pass the identical path from every worker, and provide your own double-open lock if you run more than one process.
+
+See the [CHANGELOG](./CHANGELOG.md) for the full list.
 
 ## Supported platforms
 
