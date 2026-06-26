@@ -70,8 +70,31 @@ async function reader() {
   return { verified };
 }
 
+// Opens, writes, reads, but deliberately does NOT call ks.close(). The N-API
+// finalizer's auto-release must clean up the handle without crashing.
+async function noClose() {
+  const ks = await open({ path });
+  const p = await ks.partition(partition);
+  for (let i = 0; i < count; i++) await p.insert(KEY(i), VAL(i));
+  await ks.persist();
+  let verified = 0;
+  for (let i = 0; i < count; i++) {
+    const v = p.get(KEY(i));
+    if (v && v.toString() === 'val-' + i) verified++;
+  }
+  return { verified };
+}
+
 const fn =
-  role === 'writer' ? writer : role === 'reader' ? reader : role === 'mixed' ? mixed : churn;
+  role === 'writer'
+    ? writer
+    : role === 'reader'
+      ? reader
+      : role === 'mixed'
+        ? mixed
+        : role === 'no-close'
+          ? noClose
+          : churn;
 fn()
   .then((r) => parentPort.postMessage({ ok: true, ...r }))
   .catch((e) => parentPort.postMessage({ ok: false, error: String((e && e.stack) || e) }));

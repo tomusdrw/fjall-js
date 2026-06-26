@@ -30,11 +30,13 @@
 //!   this registry. Opening one directory via divergent path spellings, or from a
 //!   second process, is unguarded and can corrupt — callers must provide their own
 //!   lockfile, and pass an identical path from every worker.
-//! - **No GC reclamation.** A handle dropped without [`release`] leaks its engine
-//!   for the process lifetime (a stderr warning is emitted). Calling `close()` on
-//!   every handle is mandatory; it is the only path that frees native memory.
+//! - **GC-driven release is best-effort.** The napi layer now calls [`release`]
+//!   from the `Drop` impl, so a forgotten `close()` no longer leaks the engine
+//!   permanently. `close()` is still recommended for deterministic cleanup — the
+//!   GC / N-API finalizer path runs at an unspecified time and may delay shutdown.
 
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak};
@@ -386,11 +388,17 @@ pub fn with_keyspace<T>(
 
 /// Emit a one-line stderr warning if this handle was dropped without release().
 /// Never touches a JS Env (safe from a finalizer). Does NOT release.
+///
+/// Uses `writeln!` (returns `Result`) instead of `eprintln!` (panics on write
+/// error). During worker-thread shutdown the N-API finalizer may run AFTER
+/// stdio handles are closed; `eprintln!` would then panic, and the panic
+/// crosses the `extern "C"` destructor boundary → SIGABRT.
 #[allow(dead_code)]
 pub fn warn_if_unclosed(state: &Arc<HandleState>, label: &str) {
     if !state.closed.load(Ordering::SeqCst) {
-        eprintln!(
-            "fjall: {label} for {:?} was dropped without close(); engine leaked for the process lifetime. Call close().",
+        let _ = writeln!(
+            std::io::stderr(),
+            "fjall: {label} for {:?} was not closed; auto-releasing in drop",
             state.key
         );
     }
