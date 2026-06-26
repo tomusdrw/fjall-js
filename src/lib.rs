@@ -3,9 +3,11 @@
 //! Each `Keyspace`/`ReadonlyKeyspace`/`Partition`/`ReadonlyPartition` is a handle
 //! holding an `Arc<engine::HandleState>`. Every blocking engine call runs on the
 //! libuv thread-pool via a napi [`Task`] (returned as `AsyncTask`); only `get` is
-//! synchronous. `EngineError` is mapped to `napi::Error`. A keyspace `Drop` calls
-//! `engine::warn_if_unclosed` — it never tears the engine down (that is `close()`'s
-//! job; see the engine module docs for the leak-on-forgotten-close contract).
+//! synchronous. `EngineError` is mapped to `napi::Error`. A keyspace `Drop`
+//! auto-releases the engine handle (via `engine::release`, wrapped in
+//! `catch_unwind`) so the engine is reclaimed even if `close()` is never called.
+//! `close()` is still recommended for deterministic cleanup — auto-release runs
+//! inside the N-API destructor during GC / environment teardown.
 //!
 //! # worker_threads safety — why `Task`, not `async fn`
 //! We deliberately do NOT expose operations as napi-rs `#[napi] async fn`. In
@@ -25,6 +27,7 @@
 
 mod engine;
 
+use std::io::Write;
 use std::sync::Arc;
 
 use napi::bindgen_prelude::*;
@@ -105,7 +108,8 @@ impl<T: Task> Task for PanicSafe<T> {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| inner.compute())).unwrap_or_else(
             |payload| {
                 let msg = panic_message(&*payload);
-                eprintln!(
+                let _ = writeln!(
+                    std::io::stderr(),
                     "fjall: caught panic in {} background task: {msg}",
                     std::any::type_name::<T>()
                 );
@@ -386,7 +390,14 @@ impl Keyspace {
 
 impl Drop for Keyspace {
     fn drop(&mut self) {
-        warn_if_unclosed(&self.state, "Keyspace");
+        // Auto-release the engine handle if the consumer forgot to call close().
+        // Wrapped in catch_unwind: during worker-thread shutdown the N-API
+        // destructor runs as an extern "C" callback — a panic here would cross
+        // the FFI boundary and abort the process (SIGABRT / exit 134).
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            warn_if_unclosed(&self.state, "Keyspace");
+            release(&self.state);
+        }));
     }
 }
 
@@ -483,7 +494,10 @@ impl ReadonlyKeyspace {
 
 impl Drop for ReadonlyKeyspace {
     fn drop(&mut self) {
-        warn_if_unclosed(&self.state, "ReadonlyKeyspace");
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            warn_if_unclosed(&self.state, "ReadonlyKeyspace");
+            release(&self.state);
+        }));
     }
 }
 

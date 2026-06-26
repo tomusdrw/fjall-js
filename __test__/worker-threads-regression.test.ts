@@ -208,7 +208,33 @@ describe('worker_threads regression', () => {
     expect(peak - baseline).toBeLessThan(200 * 1024 * 1024);
   }, 120_000);
 
-  // (5) Env isolation: workers open/use/close and then EXIT, repeatedly. Each
+  // (5) Graceful shutdown without close(): a worker opens, writes, reads, but
+  // exits WITHOUT calling close(). The N-API finalizer auto-releases the engine
+  // handle. Before the fix the process aborted (SIGABRT / exit 134) because
+  // `eprintln!` in the Drop path panicked when stderr was already closed during
+  // worker-thread environment cleanup.
+  it('worker that exits without close() does not crash', async () => {
+    const r = await runBatch({ role: 'no-close', path: dir, count: 50 });
+    expect(r.verified).toBe(50);
+    // The engine should be usable afterwards from a new worker.
+    const r2 = await runBatch({ role: 'churn', path: dir, count: 50 });
+    expect(r2.verified).toBe(50);
+  }, 20_000);
+
+  // (5b) Multiple concurrent workers exit without close(). The auto-release
+  // path must be safe under concurrent finalization from many workers.
+  it('many concurrent workers exiting without close() do not crash', async () => {
+    const CONC = 6;
+    const results = await Promise.all(
+      Array.from({ length: CONC }, () => runBatch({ role: 'no-close', path: dir, count: 50 })),
+    );
+    for (const r of results) expect(r.verified).toBe(50);
+    // Clean open/close cycle afterwards should still work.
+    const r = await runBatch({ role: 'churn', path: dir, count: 50 });
+    expect(r.verified).toBe(50);
+  }, 30_000);
+
+  // (6) Env isolation: workers open/use/close and then EXIT, repeatedly. Each
   // spawn creates and tears down a worker N-API Env. A reference bound to the
   // wrong/exited Env (the original bug class) would surface as a use-after-free.
   it('workers open/use/close then exit repeatedly without a napi crash', async () => {
