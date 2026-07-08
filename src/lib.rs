@@ -34,8 +34,8 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
 use engine::{
-    attach_or_create, open_partition, release, resolve_partition, warn_if_unclosed, with_keyspace,
-    EngineConfig, EngineError, HandleState, Writability,
+    attach_or_create, delete_partition, open_partition, release, resolve_partition,
+    warn_if_unclosed, with_keyspace, EngineConfig, EngineError, HandleState, Writability,
 };
 
 fn map_err(e: EngineError) -> Error {
@@ -195,6 +195,26 @@ impl Task for PartitionTask {
             state: self.state.clone(),
             name: std::mem::take(&mut self.name),
         })
+    }
+}
+
+/// `Keyspace::delete_partition`: destroy a partition and all its data. After it
+/// resolves, calling `partition(name)` again creates a fresh, empty partition.
+pub struct DeletePartitionTask {
+    state: Arc<HandleState>,
+    name: String,
+}
+
+impl Task for DeletePartitionTask {
+    type Output = ();
+    type JsValue = ();
+
+    fn compute(&mut self) -> Result<()> {
+        delete_partition(&self.state, &self.name).map_err(map_err)
+    }
+
+    fn resolve(&mut self, _env: Env, _output: ()) -> Result<()> {
+        Ok(())
     }
 }
 
@@ -367,6 +387,16 @@ impl Keyspace {
     #[napi(ts_return_type = "Promise<Partition>")]
     pub fn partition(&self, name: String) -> AsyncTask<PanicSafe<PartitionTask>> {
         AsyncTask::new(PanicSafe(PartitionTask {
+            state: self.state.clone(),
+            name,
+        }))
+    }
+
+    /// Destroy a partition and all its data. After the returned promise resolves,
+    /// calling `partition(name)` again creates a fresh, empty partition.
+    #[napi(ts_return_type = "Promise<void>")]
+    pub fn delete_partition(&self, name: String) -> AsyncTask<PanicSafe<DeletePartitionTask>> {
+        AsyncTask::new(PanicSafe(DeletePartitionTask {
             state: self.state.clone(),
             name,
         }))

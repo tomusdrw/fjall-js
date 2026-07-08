@@ -71,7 +71,7 @@ A complete, runnable version of this pattern lives in [`examples/worker-threads/
 
 **Every `open` must be matched by exactly one `close`.** `close()` frees the shared engine's native memory (memtables, write buffer, block cache, partition handles) **deterministically on the last handle**. A handle dropped **without** `close()` **leaks its native memory for the process lifetime** — a warning is printed to stderr, and GC does **not** reclaim it. Call `close()` on every teardown path, including error and shutdown paths.
 
-**Async ops run on libuv's thread pool.** Every async method (`open`, `partition`, `insert`, `insertBatch`, `remove`, `persist`, `close`) does its blocking work on Node's libuv thread pool — `UV_THREADPOOL_SIZE`, **default 4**, shared process-wide with `fs`/`dns`/`crypto`. This is what makes it safe across `worker_threads` (each promise resolves on its own thread, with no shared async runtime). For **write-heavy or highly concurrent** workloads, raise `UV_THREADPOOL_SIZE` (set it before the process starts; max 1024) so DB work doesn't starve — or get starved by — other libuv I/O. `get` is synchronous and runs on the calling thread regardless.
+**Async ops run on libuv's thread pool.** Every async method (`open`, `partition`, `deletePartition`, `insert`, `insertBatch`, `remove`, `persist`, `close`) does its blocking work on Node's libuv thread pool — `UV_THREADPOOL_SIZE`, **default 4**, shared process-wide with `fs`/`dns`/`crypto`. This is what makes it safe across `worker_threads` (each promise resolves on its own thread, with no shared async runtime). For **write-heavy or highly concurrent** workloads, raise `UV_THREADPOOL_SIZE` (set it before the process starts; max 1024) so DB work doesn't starve — or get starved by — other libuv I/O. `get` is synchronous and runs on the calling thread regardless.
 
 ## API
 
@@ -95,6 +95,12 @@ All engine-level config is fixed by whoever opens first (which may be a reader),
 ### `Keyspace.partition(name)` / `ReadonlyKeyspace.partition(name)`
 
 Open or create a named partition (the fjall equivalent of a column family / bucket) within the engine. Partitions are isolated from each other — writes to one are not visible from another. A partition is opened once per engine and shared by every handle.
+
+### `Keyspace.deletePartition(name): Promise<void>`
+
+Destroy a partition and **all its data** within the open keyspace, then remove its on-disk directory. After the promise resolves, calling `partition(name)` again creates a **fresh, empty** partition. Deleting a name that was never opened (or no longer exists) is not an error. Writable handles only — absent from `ReadonlyKeyspace`.
+
+This is far cheaper than closing and reopening the whole keyspace when you only need to wipe one partition's data (e.g. resetting to a known state between test vectors). Don't call it concurrently with reads/writes on the same partition; run it as a quiescent-point reset.
 
 ### `Keyspace.persist(mode?: PersistMode): Promise<void>`
 
@@ -151,6 +157,7 @@ export function openReadonly(config: DatabaseConfig): Promise<ReadonlyKeyspace>;
 
 export interface Keyspace {
   partition(name: string): Promise<Partition>;
+  deletePartition(name: string): Promise<void>;
   persist(mode?: PersistMode): Promise<void>;
   close(): Promise<void>;
 }
