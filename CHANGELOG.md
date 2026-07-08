@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`Keyspace.deletePartition(name)`.** Destroy a partition and all its data within
+  the open keyspace, removing its on-disk directory; a subsequent `partition(name)`
+  creates a fresh, empty partition. This avoids closing and reopening the whole engine
+  just to wipe one partition — the reason resetting between conformance/fuzz vectors was
+  slow. Exposes upstream fjall's `Keyspace::delete_partition`. Writable handles only.
+
 ## 0.3.2
 
 Fixes a native crash (`EXC_BAD_ACCESS` / `SIGSEGV`) when the database is used from

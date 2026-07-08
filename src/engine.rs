@@ -365,6 +365,45 @@ pub fn open_partition(state: &Arc<HandleState>, name: &str) -> Result<(), Engine
     Ok(())
 }
 
+/// Destroy a partition and all its data within the open keyspace. After this
+/// returns, a subsequent [`open_partition`] with the same name creates a fresh,
+/// empty partition.
+///
+/// fjall removes the partition's on-disk directory in `PartitionHandle::drop`
+/// (only when the *last* `Arc` clone of the handle is dropped, with its
+/// `is_deleted` flag set). `keyspace.delete_partition` takes the handle by value
+/// and drops it at the end — but only becomes the last clone if no other clone
+/// survives. So we must first remove our cached clone from `engine.partitions`
+/// and hand that owned handle in; otherwise the directory would linger and the
+/// reopen would fail with fjall's `PartitionDeleted`.
+///
+/// We source the owned handle in order of preference: (1) our cache — the common
+/// case; (2) fjall's keyspace, if the partition exists but wasn't opened through
+/// this engine (e.g. recovered from disk on open); (3) neither — the partition
+/// doesn't exist, so this is a no-op. Deleting a non-existent name must NOT open
+/// a fresh partition just to destroy it (wasteful I/O + transient on-disk state).
+///
+/// We hold the `partitions` lock across the whole operation so a concurrent
+/// [`open_partition`] cannot re-cache a fresh clone mid-delete (which would keep
+/// the directory alive). The lock covers a blocking fsync + `remove_dir_all`;
+/// that is acceptable for the reset use-case this exists for.
+pub fn delete_partition(state: &Arc<HandleState>, name: &str) -> Result<(), EngineError> {
+    let engine = live_engine(state)?;
+    let mut parts = lock(&engine.partitions);
+    let handle = match parts.remove(name) {
+        Some(handle) => handle,
+        None if engine.keyspace.partition_exists(name) => engine
+            .keyspace
+            .open_partition(name, fjall::PartitionCreateOptions::default())
+            .map_err(|e| EngineError::Fjall(e.to_string()))?,
+        None => return Ok(()),
+    };
+    engine
+        .keyspace
+        .delete_partition(handle)
+        .map_err(|e| EngineError::Fjall(e.to_string()))
+}
+
 pub fn resolve_partition(
     state: &Arc<HandleState>,
     name: &str,
@@ -717,6 +756,105 @@ mod tests {
             "expected PartitionNotFound(\"ghost\"), got {err:?}"
         );
         release(&h);
+    }
+
+    #[test]
+    fn delete_partition_removes_data_and_reopens_fresh() {
+        let _drop_guard = DROP_COUNT_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("db");
+        let h = attach_or_create(cfg(&p), Writability::Writable).unwrap();
+
+        open_partition(&h, "items").unwrap();
+        // Each resolve returns a short-lived clone that is dropped at the end of
+        // the statement, so no handle lingers when we later delete — mirroring the
+        // napi layer, where the JS `Partition` keeps no long-lived handle.
+        resolve_partition(&h, "items")
+            .unwrap()
+            .insert(b"k", b"v")
+            .unwrap();
+        assert_eq!(
+            resolve_partition(&h, "items")
+                .unwrap()
+                .get(b"k")
+                .unwrap()
+                .as_deref(),
+            Some(&b"v"[..]),
+            "value is present before delete"
+        );
+
+        delete_partition(&h, "items").unwrap();
+
+        // Reopen: a fresh, empty partition — the old data is gone.
+        open_partition(&h, "items").unwrap();
+        assert_eq!(
+            resolve_partition(&h, "items").unwrap().get(b"k").unwrap(),
+            None,
+            "reopened partition must be empty"
+        );
+
+        release(&h);
+    }
+
+    #[test]
+    fn delete_partition_of_never_opened_name_is_ok() {
+        let _drop_guard = DROP_COUNT_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("db");
+        let h = attach_or_create(cfg(&p), Writability::Writable).unwrap();
+
+        // "ghost" doesn't exist — delete is a no-op (must NOT create then destroy
+        // a partition), and the name is still free to open fresh afterwards.
+        delete_partition(&h, "ghost").unwrap();
+        open_partition(&h, "ghost").unwrap();
+        assert_eq!(
+            resolve_partition(&h, "ghost").unwrap().get(b"k").unwrap(),
+            None
+        );
+
+        release(&h);
+    }
+
+    #[test]
+    fn delete_partition_twice_is_idempotent() {
+        let _drop_guard = DROP_COUNT_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("db");
+        let h = attach_or_create(cfg(&p), Writability::Writable).unwrap();
+
+        open_partition(&h, "items").unwrap();
+        resolve_partition(&h, "items")
+            .unwrap()
+            .insert(b"k", b"v")
+            .unwrap();
+
+        // The first delete destroys it; the second finds nothing and is a no-op.
+        // Mirrors an idempotent reset that deletes the same partitions each round.
+        delete_partition(&h, "items").unwrap();
+        delete_partition(&h, "items").unwrap();
+
+        // Reopen still yields a fresh, empty, functional partition.
+        open_partition(&h, "items").unwrap();
+        let part = resolve_partition(&h, "items").unwrap();
+        assert_eq!(part.get(b"k").unwrap(), None);
+        part.insert(b"k2", b"v2").unwrap();
+        assert_eq!(part.get(b"k2").unwrap().as_deref(), Some(&b"v2"[..]));
+
+        release(&h);
+    }
+
+    #[test]
+    fn delete_partition_on_closed_keyspace_errors() {
+        let _drop_guard = DROP_COUNT_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("db");
+        let h = attach_or_create(cfg(&p), Writability::Writable).unwrap();
+        open_partition(&h, "items").unwrap();
+        release(&h);
+        assert!(matches!(
+            delete_partition(&h, "items"),
+            Err(EngineError::Closed)
+        ));
     }
 
     #[test]

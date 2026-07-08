@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 
-import { open, Keyspace, Partition } from '../index.js';
+import { open, openReadonly, Keyspace, Partition } from '../index.js';
 
 let dir: string;
 beforeEach(async () => {
@@ -109,6 +109,98 @@ describe('multi-partition isolation', () => {
     await a1.insert(k('k'), k('v'));
     const a2 = await ks.partition('shared');
     expect(a2.get(k('k'))!.toString('utf8')).toBe('v');
+    await ks.close();
+  });
+});
+
+describe('deletePartition', () => {
+  it('removes all data; reopening yields a fresh empty partition', async () => {
+    const ks = await open({ path: dir });
+    const p = await ks.partition('items');
+    await p.insert(k('a'), k('1'));
+    await p.insert(k('b'), k('2'));
+    expect(p.get(k('a'))!.toString('utf8')).toBe('1');
+
+    await ks.deletePartition('items');
+
+    const p2 = await ks.partition('items');
+    expect(p2.get(k('a'))).toBeNull();
+    expect(p2.get(k('b'))).toBeNull();
+    await ks.close();
+  });
+
+  it('yields a fully functional partition after reopen (write then read)', async () => {
+    const ks = await open({ path: dir });
+    const p = await ks.partition('items');
+    await p.insert(k('old'), k('data'));
+
+    await ks.deletePartition('items');
+
+    const p2 = await ks.partition('items');
+    await p2.insert(k('new'), k('value'));
+    expect(p2.get(k('new'))!.toString('utf8')).toBe('value');
+    expect(p2.get(k('old'))).toBeNull();
+    await ks.close();
+  });
+
+  it('is idempotent — deleting the same partition twice resolves', async () => {
+    const ks = await open({ path: dir });
+    const p = await ks.partition('items');
+    await p.insert(k('a'), k('1'));
+    await ks.deletePartition('items');
+    await expect(ks.deletePartition('items')).resolves.toBeUndefined();
+    const p2 = await ks.partition('items');
+    expect(p2.get(k('a'))).toBeNull();
+    await ks.close();
+  });
+
+  it('only affects the named partition, not its siblings', async () => {
+    const ks = await open({ path: dir });
+    const a = await ks.partition('A');
+    const b = await ks.partition('B');
+    await a.insert(k('k'), k('from-A'));
+    await b.insert(k('k'), k('from-B'));
+
+    await ks.deletePartition('A');
+
+    const a2 = await ks.partition('A');
+    expect(a2.get(k('k'))).toBeNull();
+    expect(b.get(k('k'))!.toString('utf8')).toBe('from-B');
+    await ks.close();
+  });
+
+  it('does not resurrect data after persist + keyspace reopen', async () => {
+    const ks1 = await open({ path: dir });
+    const p1 = await ks1.partition('items');
+    await p1.insert(k('a'), k('1'));
+    await ks1.persist('sync-all');
+    await ks1.deletePartition('items');
+    await ks1.close();
+
+    const ks2 = await open({ path: dir });
+    const p2 = await ks2.partition('items');
+    expect(p2.get(k('a'))).toBeNull();
+    await ks2.close();
+  });
+
+  it('resolves for a partition that was never opened', async () => {
+    const ks = await open({ path: dir });
+    await expect(ks.deletePartition('ghost')).resolves.toBeUndefined();
+    const p = await ks.partition('ghost');
+    expect(p.get(k('x'))).toBeNull();
+    await ks.close();
+  });
+
+  it('rejects on a closed keyspace', async () => {
+    const ks = await open({ path: dir });
+    await ks.partition('items');
+    await ks.close();
+    await expect(ks.deletePartition('items')).rejects.toThrow(/closed/);
+  });
+
+  it('is not exposed on a read-only keyspace', async () => {
+    const ks = await openReadonly({ path: dir });
+    expect((ks as unknown as { deletePartition?: unknown }).deletePartition).toBeUndefined();
     await ks.close();
   });
 });
