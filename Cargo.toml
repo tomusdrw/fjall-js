@@ -19,6 +19,18 @@ napi = { version = "2", default-features = false, features = ["napi9"] }
 napi-derive = "2"
 fjall = "2"
 
+# fjall 2.11.2 has two bugs in `delete_partition` when a background flush of the
+# same partition is in flight (hit by repeated delete+recreate "reset" cycles):
+#   1. the flush worker panics in `FlushQueue::dequeue` and poisons the shared
+#      flush-manager lock for the whole engine, and
+#   2. the partition's directory stays pinned by journal eviction-watermark
+#      clones, so re-opening the name fails with `PartitionDeleted`.
+# Both are fixed in our fork branch (pinned by rev for reproducible CI builds).
+# Upstream is 2.11.2 (highest 2.x); 3.x is a breaking rewrite. Revisit on bump.
+# See __test__/delete-partition-recreate.test.ts for the regression.
+[patch.crates-io]
+fjall = { git = "https://github.com/tomusdrw/fjall", rev = "645bf5ecf833baf60a7ce63cb29289689706f769" }
+
 [build-dependencies]
 napi-build = "2"
 

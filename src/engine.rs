@@ -383,25 +383,74 @@ pub fn open_partition(state: &Arc<HandleState>, name: &str) -> Result<(), Engine
 /// doesn't exist, so this is a no-op. Deleting a non-existent name must NOT open
 /// a fresh partition just to destroy it (wasteful I/O + transient on-disk state).
 ///
-/// We hold the `partitions` lock across the whole operation so a concurrent
-/// [`open_partition`] cannot re-cache a fresh clone mid-delete (which would keep
-/// the directory alive). The lock covers a blocking fsync + `remove_dir_all`;
-/// that is acceptable for the reset use-case this exists for.
+/// We hold the `partitions` lock across the `keyspace.delete_partition` call so a
+/// concurrent [`open_partition`] cannot re-cache a fresh clone mid-delete (which
+/// would keep the directory alive). The lock covers a blocking fsync +
+/// `remove_dir_all`; that is acceptable for the reset use-case this exists for.
+///
+/// # Waiting for the directory to be reclaimed
+/// Even after `keyspace.delete_partition` returns, an **in-flight background
+/// flush or compaction** of this partition may still hold a `PartitionHandle`
+/// clone, so the directory (and fjall's `.deleted` marker inside it) is only
+/// removed once that finishes and the last clone drops. A caller that
+/// immediately re-opens the same name would then hit fjall's `PartitionDeleted`.
+/// So we release the `partitions` lock and wait (bounded) for the directory to
+/// disappear before returning. With our patched fjall this is short: the flush
+/// and journal handle clones are dropped *during* `delete_partition`, leaving
+/// only transient in-flight background work to drain (see the fork patch notes
+/// in `Cargo.toml`). In the common case with no in-flight work the directory is
+/// already gone when `delete_partition` returns, so this adds no latency.
 pub fn delete_partition(state: &Arc<HandleState>, name: &str) -> Result<(), EngineError> {
     let engine = live_engine(state)?;
-    let mut parts = lock(&engine.partitions);
-    let handle = match parts.remove(name) {
-        Some(handle) => handle,
-        None if engine.keyspace.partition_exists(name) => engine
+    let dir = {
+        let mut parts = lock(&engine.partitions);
+        let handle = match parts.remove(name) {
+            Some(handle) => handle,
+            None if engine.keyspace.partition_exists(name) => engine
+                .keyspace
+                .open_partition(name, fjall::PartitionCreateOptions::default())
+                .map_err(|e| EngineError::Fjall(e.to_string()))?,
+            None => return Ok(()),
+        };
+        // Capture the on-disk directory before handing ownership to fjall.
+        let dir = handle.path().to_path_buf();
+        engine
             .keyspace
-            .open_partition(name, fjall::PartitionCreateOptions::default())
-            .map_err(|e| EngineError::Fjall(e.to_string()))?,
-        None => return Ok(()),
-    };
-    engine
-        .keyspace
-        .delete_partition(handle)
-        .map_err(|e| EngineError::Fjall(e.to_string()))
+            .delete_partition(handle)
+            .map_err(|e| EngineError::Fjall(e.to_string()))?;
+        dir
+    }; // `partitions` lock released here — the wait below must not block other ops.
+
+    wait_for_partition_dir_removed(&dir);
+    Ok(())
+}
+
+/// Block until `dir` (a just-deleted partition's directory) no longer exists, so
+/// the name is safe to re-open without tripping fjall's `PartitionDeleted` check.
+///
+/// Bounded and best-effort: an in-flight flush/compaction of a removed partition
+/// drains quickly, after which the last handle clone's `Drop` runs
+/// `remove_dir_all`. The cap means we can never wedge the caller; if it ever
+/// expired, a subsequent re-open would simply surface the original transient
+/// error rather than hanging. In the common case the directory is already gone
+/// on the first check and this returns immediately.
+fn wait_for_partition_dir_removed(dir: &Path) {
+    use std::time::{Duration, Instant};
+    const MAX_WAIT: Duration = Duration::from_secs(5);
+    const STEP: Duration = Duration::from_millis(2);
+
+    let start = Instant::now();
+    while dir.exists() {
+        if start.elapsed() >= MAX_WAIT {
+            let _ = writeln!(
+                std::io::stderr(),
+                "fjall: partition directory {dir:?} still present after {MAX_WAIT:?}; \
+                 an immediate re-open of the same name may transiently fail"
+            );
+            return;
+        }
+        std::thread::sleep(STEP);
+    }
 }
 
 pub fn resolve_partition(
