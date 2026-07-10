@@ -10,6 +10,21 @@
   just to wipe one partition — the reason resetting between conformance/fuzz vectors was
   slow. Exposes upstream fjall's `Keyspace::delete_partition`. Writable handles only.
 
+### Fixed
+
+- **`deletePartition` + recreate is now safe under load.** Repeatedly deleting and
+  recreating populated partitions (e.g. a reset loop) raced fjall's background flusher.
+  After a few dozen cycles `partition(name)` could throw `FjallError: PartitionDeleted`,
+  and with the right timing the flusher itself panicked (an out-of-bounds dequeue on a
+  just-deleted partition's task queue) while holding a lock — poisoning the shared engine
+  for every worker. Two upstream fjall 2.11.2 bugs were involved: (1) the flush worker
+  resurrected a just-deleted partition's task queue and dequeued past its end, and (2) a
+  deleted partition's directory stayed pinned by journal eviction-watermark handle
+  clones until an unrelated later flush. Both are fixed in a patched fjall build (a
+  pinned fork of 2.11.2), and `partition(name)` now retries through fjall's transient
+  `PartitionDeleted` while a just-deleted partition of the same name finishes draining,
+  so recreating it — even from another handle of the shared engine — always succeeds.
+
 ## 0.3.2
 
 Fixes a native crash (`EXC_BAD_ACCESS` / `SIGSEGV`) when the database is used from
