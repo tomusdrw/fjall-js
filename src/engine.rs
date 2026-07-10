@@ -42,12 +42,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
-/// How long `open_partition` / `delete_partition` will wait for an in-flight
-/// deletion of the same partition to fully drain — its background flush /
-/// compaction to finish and its on-disk directory (with fjall's `.deleted`
-/// marker) to be removed. Deletion drains in well under a second in practice;
-/// the cap only guards against a pathological stuck state so a caller can never
-/// wedge. The step is the poll interval.
+/// How long [`open_partition`] will wait for an in-flight deletion of the same
+/// partition to fully drain — its background flush / compaction to finish and
+/// its on-disk directory (with fjall's `.deleted` marker) to be removed — before
+/// giving up and surfacing the error. Deletion drains in well under a second in
+/// practice; the cap only guards against a pathological stuck state so a caller
+/// can never wedge. The step is the poll interval between reopen attempts.
 const PARTITION_DELETE_MAX_WAIT: Duration = Duration::from_secs(5);
 const PARTITION_DELETE_POLL_STEP: Duration = Duration::from_millis(2);
 
@@ -362,22 +362,8 @@ fn live_engine(state: &Arc<HandleState>) -> Result<Arc<Engine>, EngineError> {
     state.engine.upgrade().ok_or(EngineError::Closed)
 }
 
-pub fn open_partition(state: &Arc<HandleState>, name: &str) -> Result<(), EngineError> {
-    let engine = live_engine(state)?;
-    // Held across the whole check-open-insert so a concurrent `delete_partition`
-    // cannot interleave and leave us caching a handle to a partition it just
-    // destroyed. That means the retry below runs under the lock; it only sleeps
-    // when a concurrent delete of *this* name is mid-drain (rare), and is bounded.
-    let mut parts = lock(&engine.partitions);
-    if !parts.contains_key(name) {
-        let handle = open_fjall_partition(&engine.keyspace, name)?;
-        parts.insert(name.to_string(), handle);
-    }
-    Ok(())
-}
-
-/// Open (creating if absent) a fjall partition, retrying briefly while a
-/// concurrent [`delete_partition`] of the same name is still draining.
+/// Open (idempotently) a partition, retrying briefly while a concurrent
+/// [`delete_partition`] of the same name is still draining.
 ///
 /// A `delete_partition` writes fjall's `.deleted` marker and then removes the
 /// directory in the background; until the marker is gone fjall refuses to
@@ -385,21 +371,42 @@ pub fn open_partition(state: &Arc<HandleState>, name: &str) -> Result<(), Engine
 /// state is always transient — a live `.deleted` marker means some delete is in
 /// progress (crash-leftover markers are cleaned during keyspace-open recovery,
 /// not here) — so we wait it out rather than surface a spurious error to a
-/// caller that merely raced a reset. Bounded, so a genuinely stuck marker (e.g.
-/// a failed `remove_dir_all`) surfaces the error instead of hanging forever.
-fn open_fjall_partition(
-    keyspace: &fjall::Keyspace,
-    name: &str,
-) -> Result<fjall::PartitionHandle, EngineError> {
+/// caller that merely raced a reset. Bounded by [`PARTITION_DELETE_MAX_WAIT`], so
+/// a genuinely stuck marker (e.g. a failed `remove_dir_all`) surfaces the error
+/// instead of hanging forever.
+///
+/// Each *attempt* holds the `partitions` lock across the whole check-open-insert
+/// so a concurrent `delete_partition` cannot interleave and leave us caching a
+/// handle to a partition it just destroyed. But the lock is **released before
+/// each sleep**, so a slow drain of one partition does not stall unrelated
+/// `open`/`resolve`/`delete` calls on the shared engine — they take the lock in
+/// the gaps between attempts.
+pub fn open_partition(state: &Arc<HandleState>, name: &str) -> Result<(), EngineError> {
+    let engine = live_engine(state)?;
     let start = Instant::now();
     loop {
-        match keyspace.open_partition(name, fjall::PartitionCreateOptions::default()) {
-            Ok(handle) => return Ok(handle),
-            Err(fjall::Error::PartitionDeleted) if start.elapsed() < PARTITION_DELETE_MAX_WAIT => {
-                std::thread::sleep(PARTITION_DELETE_POLL_STEP);
+        {
+            let mut parts = lock(&engine.partitions);
+            if parts.contains_key(name) {
+                return Ok(());
             }
-            Err(e) => return Err(EngineError::Fjall(e.to_string())),
+            match engine
+                .keyspace
+                .open_partition(name, fjall::PartitionCreateOptions::default())
+            {
+                Ok(handle) => {
+                    parts.insert(name.to_string(), handle);
+                    return Ok(());
+                }
+                // Transient: a delete of this name is still draining. Fall through
+                // to sleep — but only after dropping the lock at the end of this
+                // scope, never while holding it.
+                Err(fjall::Error::PartitionDeleted)
+                    if start.elapsed() < PARTITION_DELETE_MAX_WAIT => {}
+                Err(e) => return Err(EngineError::Fjall(e.to_string())),
+            }
         }
+        std::thread::sleep(PARTITION_DELETE_POLL_STEP);
     }
 }
 
@@ -431,7 +438,7 @@ fn open_fjall_partition(
 /// fjall's `.deleted` marker inside it) is removed only once that finishes and
 /// the last clone drops. We do **not** block here waiting for that — instead
 /// [`open_partition`] retries through fjall's transient `PartitionDeleted` while
-/// the marker clears (see [`open_fjall_partition`]). Waiting on the reopen side
+/// the marker clears. Waiting on the reopen side
 /// rather than here has the same wall-clock (the drain must finish either way),
 /// works for a caller on *any* handle of the shared engine (not just the one
 /// that deleted), and avoids being fooled by a concurrent recreate at the same
