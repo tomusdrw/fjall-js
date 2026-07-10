@@ -19,12 +19,11 @@
   just-deleted partition's task queue) while holding a lock — poisoning the shared engine
   for every worker. Two upstream fjall 2.11.2 bugs were involved: (1) the flush worker
   resurrected a just-deleted partition's task queue and dequeued past its end, and (2) a
-  deleted
-  partition's directory stayed pinned by journal eviction-watermark handle clones until
-  an unrelated later flush. Both are fixed in a patched fjall build (a pinned fork of
-  2.11.2), and the napi wrapper now waits for the partition directory to be reclaimed
-  before `deletePartition` resolves, so an immediate recreate never sees the stale
-  `.deleted` marker.
+  deleted partition's directory stayed pinned by journal eviction-watermark handle
+  clones until an unrelated later flush. Both are fixed in a patched fjall build (a
+  pinned fork of 2.11.2), and `partition(name)` now retries through fjall's transient
+  `PartitionDeleted` while a just-deleted partition of the same name finishes draining,
+  so recreating it — even from another handle of the shared engine — always succeeds.
 
 ## 0.3.2
 
