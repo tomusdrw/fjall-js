@@ -78,10 +78,7 @@ jobs:
         run: npm ci
 
       - name: Build native module
-        run: npx napi build --platform --release --target ${{ matrix.target }}
-
-      - name: Patch loader for ESM-bundler compatibility
-        run: node scripts/patch-esm-loader.mjs
+        run: npx napi build --platform --release --target ${{ matrix.target }} -o dist
 
       - name: Type-check (needs generated index.d.ts from the build above)
         run: npx tsc --noEmit
@@ -93,5 +90,5 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: fjall-${{ matrix.target }}
-          path: ${{ matrix.output }}
+          path: dist/${{ matrix.output }}
           if-no-files-found: error

@@ -43,10 +43,7 @@ jobs:
         run: npm ci
 
       - name: Build native module
-        run: npx napi build --platform --release --target ${{ matrix.target }}
-
-      - name: Patch loader for ESM-bundler compatibility
-        run: node scripts/patch-esm-loader.mjs
+        run: npx napi build --platform --release --target ${{ matrix.target }} -o dist
 
       - name: Run tests
         run: npm test
@@ -55,20 +52,20 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: fjall-${{ matrix.target }}
-          path: ${{ matrix.output }}
+          path: dist/${{ matrix.output }}
           if-no-files-found: error
 
-      # The generated + ESM-patched loader and the type defs are identical across
-      # targets, so upload them once (from the Linux build) for the publish job,
-      # which does not run `napi build` and so cannot regenerate them itself.
+      # The generated loader and the type defs are identical across targets, so
+      # upload them once (from the Linux build) for the publish job, which does
+      # not run `napi build` and so cannot regenerate them itself.
       - name: Upload JS bindings for the main package
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         uses: actions/upload-artifact@v7
         with:
           name: bindings
           path: |
-            index.js
-            index.d.ts
+            dist/index.js
+            dist/index.d.ts
           if-no-files-found: error
 
   publish:
@@ -116,8 +113,9 @@ jobs:
       - name: Restore generated loader for the main package
         run: |
           set -euo pipefail
-          cp artifacts/bindings/index.js artifacts/bindings/index.d.ts .
-          ls -la index.js index.d.ts
+          mkdir -p dist
+          cp artifacts/bindings/dist/index.js artifacts/bindings/dist/index.d.ts dist/
+          ls -la dist/index.js dist/index.d.ts
 
       # Add the per-platform optionalDependencies (deliberately kept out of the
       # committed manifest so `npm ci` stays valid) to the main package that is
