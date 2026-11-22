@@ -1,5 +1,5 @@
 import { parentPort, workerData } from 'node:worker_threads';
-import { open, openReadonly } from '../index.js';
+import { open, openReadonly } from '../dist/index.js';
 
 const { role, path, key, value } = workerData;
 

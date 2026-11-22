@@ -3,7 +3,7 @@
 // INSIDE the worker, so concurrent workers exercise the native async path the way
 // Typeberry's importer does. Posts exactly one result message, then exits.
 import { parentPort, workerData } from 'node:worker_threads';
-import { open, openReadonly } from '../index.js';
+import { open, openReadonly } from '../dist/index.js';
 
 const { role, path, count, partition = 'data' } = workerData;
 const KEY = (i) => Buffer.from('key-' + i);

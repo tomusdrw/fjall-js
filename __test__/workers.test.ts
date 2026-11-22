@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { Worker } from 'node:worker_threads';
-import { open } from '../index.js';
+import { open } from '../dist/index.js';
 
 let dir: string;
 beforeEach(async () => {

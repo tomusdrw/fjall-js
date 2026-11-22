@@ -3,7 +3,7 @@
 // get, persist, close) so it can interleave two workers deterministically. Each
 // request carries an `id`; the reply echoes it.
 import { parentPort } from 'node:worker_threads';
-import * as fjall from '../index.js';
+import * as fjall from '../dist/index.js';
 
 let ks = null;
 const parts = new Map();

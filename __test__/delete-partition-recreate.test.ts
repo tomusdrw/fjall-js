@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 
-import { open } from '../index.js';
+import { open } from '../dist/index.js';
 
 let dir: string;
 beforeEach(async () => {

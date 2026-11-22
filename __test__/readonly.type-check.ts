@@ -1,4 +1,4 @@
-import { openReadonly } from '../index.js';
+import { openReadonly } from '../dist/index.js';
 
 async function _assertNoWrites() {
   const ro = await openReadonly({ path: '/tmp/x' });

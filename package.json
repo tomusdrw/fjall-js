@@ -2,8 +2,8 @@
   "name": "@fjall-js/fjall",
   "version": "0.5.0",
   "description": "TypeScript wrapper for the fjall LSM-tree storage engine",
-  "main": "index.js",
-  "types": "index.d.ts",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "license": "MIT OR Apache-2.0",
   "repository": {
     "type": "git",
@@ -34,9 +34,8 @@
     "access": "public"
   },
   "scripts": {
-    "build": "napi build --platform --release && node scripts/patch-esm-loader.mjs",
-    "build:debug": "napi build --platform && node scripts/patch-esm-loader.mjs",
-    "patch:loader": "node scripts/patch-esm-loader.mjs",
+    "build": "napi build --platform --release -o dist",
+    "build:debug": "napi build --platform -o dist",
     "artifacts": "napi artifacts",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -44,15 +43,15 @@
     "format": "prettier --write ."
   },
   "devDependencies": {
-    "@napi-rs/cli": "^2.18.4",
-    "@types/node": "^20.11.0",
-    "prettier": "^3.2.0",
-    "typescript": "^5.4.0",
-    "vitest": "^1.4.0"
+    "@napi-rs/cli": "^3.10.12",
+    "@types/node": "^26.6.6",
+    "prettier": "^3.10.1",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.1"
   },
   "files": [
-    "index.js",
-    "index.d.ts"
+    "dist/index.js",
+    "dist/index.d.ts"
   ],
   "keywords": [
     "fjall",
