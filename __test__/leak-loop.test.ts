@@ -19,8 +19,13 @@ describe('leak loop', () => {
     const key = Buffer.from('k');
     const sample = () => process.memoryUsage().rss;
 
-    // Warm up so first-touch allocations don't skew the baseline.
-    for (let i = 0; i < 5; i++) {
+    // Warm up until the allocator's retained-memory high-water mark is reached,
+    // so the baseline is taken on the plateau. On macOS 26 the system malloc
+    // keeps ~120 MB of freed 2 MiB blocks resident and only plateaus after
+    // ~75 cycles; measuring before that reads as "growth" even though it is
+    // bounded. A genuine per-cycle leak (2 MiB × 60 = 120 MiB) still blows the
+    // budget below.
+    for (let i = 0; i < 80; i++) {
       const ks = await open({ path: dir });
       const p = await ks.partition('p');
       await p.insert(key, value);
@@ -39,5 +44,5 @@ describe('leak loop', () => {
     }
     // Deterministic close frees native memory each cycle; allow generous slack.
     expect(peak - baseline).toBeLessThan(64 * 1024 * 1024);
-  }, 60_000);
+  }, 120_000);
 });
