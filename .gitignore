@@ -16,6 +16,7 @@ yarn-error.log*
 # napi-rs build outputs (generated under dist/ — do NOT ignore
 # fjall-squat/index.js or other nested index.js files)
 /dist/
+*.node
 .dist.napi-stage-*
 
 # Test data
