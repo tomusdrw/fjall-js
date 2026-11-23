@@ -17,17 +17,12 @@
     "node": ">=18.17.0"
   },
   "napi": {
-    "name": "fjall",
-    "triples": {
-      "defaults": false,
-      "additional": [
-        "aarch64-apple-darwin",
-        "x86_64-unknown-linux-gnu"
-      ]
-    },
-    "package": {
-      "name": "@fjall-js/fjall"
-    }
+    "binaryName": "fjall",
+    "targets": [
+      "aarch64-apple-darwin",
+      "x86_64-unknown-linux-gnu"
+    ],
+    "packageName": "@fjall-js/fjall"
   },
   "publishConfig": {
     "registry": "https://registry.npmjs.org/",
@@ -48,6 +43,9 @@
     "prettier": "^3.10.1",
     "typescript": "^7.0.2",
     "vitest": "^5.1.1"
+  },
+  "allowScripts": {
+    "fsevents": false
   },
   "files": [
     "dist/index.js",
