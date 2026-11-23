@@ -3,26 +3,33 @@ on:
   pull_request:
     branches: [main]
 jobs:
-  ab:
+  curve:
     runs-on: macos-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        ref: [main, pr]
     steps:
       - uses: actions/checkout@v6
-        with:
-          ref: ${{ matrix.ref == 'main' && 'main' || github.event.pull_request.head.sha }}
       - uses: actions/setup-node@v6
         with:
           node-version: 24
       - uses: dtolnay/rust-toolchain@stable
-      - run: sw_vers; npm ci
-      - name: Build
+      - run: npm ci && npx napi build --platform --release -o dist
+      - name: Growth curve
         run: |
-          if [ -f scripts/patch-esm-loader.mjs ]; then npm run build; else npx napi build --platform --release -o dist; fi
-      - name: Leak test x3 (report growth)
-        run: |
-          F=__test__/leak-loop.test.ts
-          sed -i '' 's|expect(peak - baseline)|console.log("GROWTH_MB", (peak - baseline) / 1048576); expect(peak - baseline)|' $F
-          for i in 1 2 3; do npx vitest run $F 2>&1 | grep -E "GROWTH_MB|passed|failed" || true; done
+          cat > curve.mjs <<'JS'
+          import { mkdtempSync } from 'node:fs';
+          import { tmpdir } from 'node:os';
+          import { join } from 'node:path';
+          import { randomBytes } from 'node:crypto';
+          import { open } from './dist/index.js';
+          const dir = mkdtempSync(join(tmpdir(), 'curve-'));
+          const size = Number(process.argv[2]);
+          const value = randomBytes(size), key = Buffer.from('k');
+          const cycle = async () => { const ks = await open({ path: dir }); const p = await ks.partition('p'); await p.insert(key, value); await ks.persist(); await ks.close(); };
+          for (let i = 0; i < 5; i++) await cycle();
+          const base = process.memoryUsage().rss; const out = [];
+          for (let i = 1; i <= 200; i++) { await cycle(); if (i % 25 === 0) out.push(((process.memoryUsage().rss - base) / 1048576).toFixed(0)); }
+          console.log(`value=${size} growth_MB@25..200:`, out.join(' '));
+          JS
+          node curve.mjs 2097152
+          node curve.mjs 2097152
+          node curve.mjs 65536
+          node --expose-gc -e "0" && echo ok
