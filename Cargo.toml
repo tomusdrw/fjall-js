@@ -15,8 +15,8 @@ crate-type = ["cdylib"]
 # ThreadSafeFunction deferred, which crashes under concurrent Node worker_threads
 # Envs. We use napi `Task`/`AsyncTask` (libuv per-Env async work) instead.
 # See src/lib.rs and .context/ROOT_CAUSE.md.
-napi = { version = "2", default-features = false, features = ["napi9"] }
-napi-derive = "2"
+napi = { version = "3", default-features = false, features = ["napi9"] }
+napi-derive = "3"
 fjall = "2"
 
 # fjall 2.11.2 has two bugs in `delete_partition` when a background flush of the

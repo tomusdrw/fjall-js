@@ -128,7 +128,7 @@ impl<T: Task> Task for PanicSafe<T> {
         self.0.reject(env, err)
     }
 
-    fn finally(&mut self, env: Env) -> Result<()> {
+    fn finally(self, env: Env) -> Result<()> {
         self.0.finally(env)
     }
 }

@@ -11,5 +11,5 @@
     "noEmit": true,
     "types": ["node", "vitest/globals"]
   },
-  "include": ["__test__/**/*.ts", "index.d.ts"]
+  "include": ["__test__/**/*.ts", "dist/index.d.ts"]
 }

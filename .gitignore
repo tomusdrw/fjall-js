@@ -13,11 +13,11 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# napi-rs build outputs (generated at repo root only — do NOT ignore
+# napi-rs build outputs (generated under dist/ — do NOT ignore
 # fjall-squat/index.js or other nested index.js files)
+/dist/
 *.node
-/index.js
-/index.d.ts
+.dist.napi-stage-*
 
 # Test data
 __test__/tmp/
