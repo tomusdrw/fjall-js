@@ -1,0 +1,28 @@
+name: AB debug (temporary)
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  ab:
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ref: [main, pr]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ matrix.ref == 'main' && 'main' || github.event.pull_request.head.sha }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sw_vers; npm ci
+      - name: Build
+        run: |
+          if [ -f scripts/patch-esm-loader.mjs ]; then npm run build; else npx napi build --platform --release -o dist; fi
+      - name: Leak test x3 (report growth)
+        run: |
+          F=__test__/leak-loop.test.ts
+          sed -i '' 's|expect(peak - baseline)|console.log("GROWTH_MB", (peak - baseline) / 1048576); expect(peak - baseline)|' $F
+          for i in 1 2 3; do npx vitest run $F 2>&1 | grep -E "GROWTH_MB|passed|failed" || true; done
